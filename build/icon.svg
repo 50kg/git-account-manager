@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b7bf0"/>
+      <stop offset="1" stop-color="#1c9a5a"/>
+    </linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <!-- macOS 图标网格：824×824 圆角方块 -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)" filter="url(#sh)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="none" stroke="#fff" stroke-opacity="0.18" stroke-width="4"/>
+  <g fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 分支：主干 + 分叉 -->
+    <line x1="352" y1="356" x2="352" y2="668"/>
+    <path d="M352 560 C352 470 430 452 520 452"/>
+    <circle cx="352" cy="300" r="56"/>
+    <circle cx="352" cy="724" r="56"/>
+    <!-- 钥匙：分叉的终点是钥匙环 -->
+    <circle cx="628" cy="452" r="108"/>
+    <line x1="628" y1="560" x2="628" y2="772"/>
+    <line x1="628" y1="680" x2="700" y2="680"/>
+    <line x1="628" y1="744" x2="684" y2="744"/>
+  </g>
+  <circle cx="628" cy="452" r="34" fill="#fff"/>
+</svg>

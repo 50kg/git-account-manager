@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>Git 账号管家</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="dragbar"></div>
+<aside class="side">
+  <div class="brand">Git 账号管家</div>
+  <nav>
+    <button data-tab="repos" class="on"><span>项目</span><b id="n-repos"></b></button>
+    <button data-tab="accounts"><span>账号</span><b id="n-accounts"></b></button>
+    <button data-tab="records"><span>记录与设置</span></button>
+  </nav>
+  <div class="side-foot">
+    <div id="busy" hidden><span class="spin"></span> 处理中…</div>
+    <div id="sys" class="muted"></div>
+  </div>
+</aside>
+<main>
+  <section id="tab-repos"></section>
+  <section id="tab-accounts" hidden></section>
+  <section id="tab-records" hidden></section>
+</main>
+<div id="drop" hidden><div>松开鼠标，添加项目<small>拖入普通文件夹时，会添加里面的 Git 项目</small></div></div>
+<script src="app.js"></script>
+</body>
+</html>
