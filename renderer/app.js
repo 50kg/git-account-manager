@@ -342,6 +342,16 @@ function visibleRepos() {
 }
 const appIcon = k => ICONS[k] ? `<img class="app-ic" src="${ICONS[k]}" alt="">` : '';
 
+// JetBrains IDE 没开 “Use credential helper” 时，会用 `-c credential.helper=` 绕过系统密码库，推送 HTTPS 项目弹登录框
+const idesNoHelper = () => (S.sys.ides || []).filter(i => !i.helper);
+const ideFixHtml = () => t('打开 IDE 的 <b>Settings → Version Control → Git</b>（中文界面：设置 → 版本控制 → Git），勾选 <b>“Use credential helper”</b>（使用凭据助手）。');
+function ideNote() {
+  const bad = idesNoHelper();
+  if (!bad.length || !S.repos.some(r => r.proto === 'https')) return '';
+  return `<div class="note">${[t('<b>{ides} 没开 “Use credential helper”</b>：在 IDE 里推送 HTTPS 项目会绕过{store}，弹出 “Log In to GitHub”，用不上这里存的 token。',
+    { ides: esc(bad.map(i => i.name).join(sep())), store: esc(storeName()) }), ideFixHtml()].join(isEn() ? ' ' : '')}</div>`;
+}
+
 function renderRepos() {
   const el = $('#tab-repos');
   const repos = S.repos;
@@ -361,7 +371,7 @@ function renderRepos() {
   list.forEach(r => { (groups[groupOf(r)] = groups[groupOf(r)] || []).push(r); });
   const rank = g => { const i = Object.keys(HOST_NAMES).indexOf(g); return i >= 0 ? i : g.includes('.') ? 50 : 99; };
   const order = Object.keys(groups).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  el.innerHTML = head + `
+  el.innerHTML = head + ideNote() + `
     <div class="stats">
       ${[['all', repos.length, t('全部项目'), ''], ['attention', repos.filter(needsAttention).length, t('需要处理'), 'warn'],
         ['behind', repos.filter(FILTERS.behind).length, t('远程有更新'), 'acc'], ['dirty', repos.filter(FILTERS.dirty).length, t('有本地改动'), ''],
@@ -1063,6 +1073,7 @@ function historyRows() {
 function renderRecords() {
   const s = S.sys;
   const store = storeName();
+  const ides = s.ides || [], badIdes = idesNoHelper();
   const settings = [
     rowHtml('lang',
       `<span class="xic set">文A</span><span class="xmain"><b>${esc(t('语言'))}</b><span class="muted">${isEn() ? 'English' : '中文'}</span></span>`,
@@ -1073,14 +1084,19 @@ function renderRecords() {
       `<p class="muted" style="margin-top:0">${t('导出的文件只有账号信息（网站、用户名、备注、密钥文件名），<b>不含 token 和密钥</b>。在另一台电脑导入后，到账号页把 token 粘贴一次即可；SSH 密钥需要自己拷过去，或在那台电脑上重新生成。')}</p>
        <div class="acts"><button class="btn" data-act="export">${esc(t('导出账号配置…'))}</button><button class="btn" data-act="import">${esc(t('导入账号配置…'))}</button></div>`),
     rowHtml('sys',
-      `<span class="xic set">ⓘ</span><span class="xmain"><b>${esc(t('本机信息'))}</b><span class="muted">${esc(s.platform)} · ${esc((s.gitVersion || t('没找到 git')).replace(/^git version /, 'Git '))} · ${esc(s.helper ? store : t('没配置凭据存储'))}</span></span>${s.helper && !s.gitMissing ? '' : chip('bad', t('要处理'))}`,
+      `<span class="xic set">ⓘ</span><span class="xmain"><b>${esc(t('本机信息'))}</b><span class="muted">${esc(s.platform)} · ${esc((s.gitVersion || t('没找到 git')).replace(/^git version /, 'Git '))} · ${esc(s.helper ? store : t('没配置凭据存储'))}${badIdes.length ? ' · ' + esc(t('{n} 个 IDE 没开凭据助手', { n: badIdes.length })) : ''}</span></span>${s.helper && !s.gitMissing && !badIdes.length ? '' : chip('bad', t('要处理'))}`,
       `<div class="kvgrid">
          <span>${esc(t('系统'))}</span><b>${esc(s.platform)}</b>
          <span>Git</span><b>${esc(s.gitVersion || t('没有找到 git，请先安装'))}</b>
          <span>${esc(t('凭据存储'))}</span><b>${esc(s.helper || t('未配置'))}${s.helper ? '' : ' ' + chip('bad', t('没配置 credential.helper，token 存不住'))}</b>
          <span>${esc(t('代理'))}</span><b>${esc(s.proxy || t('无'))}</b>
+         ${ides.length ? `<span>JetBrains</span><b>${ides.map(i => `${esc(i.name)} ${i.helper
+           ? chip('ok', t('已用凭据助手'))
+           : chip('bad', t('没开 Use credential helper'), i.file)}`).join('<br>')}</b>` : ''}
          <span>${esc(t('配置文件'))}</span><b class="selectable">${esc(s.confPath)}</b>
-       </div>`),
+       </div>
+       ${badIdes.length ? `<p class="muted">${[t('JetBrains IDE（IntelliJ IDEA / PyCharm / WebStorm 等）默认用 {cmd} 运行 git，绕过{store}，推送时会弹 “Log In to GitHub”。',
+         { cmd: '<span class="mono">git -c credential.helper=</span>', store: esc(store) }), ideFixHtml(), esc(t('本工具只读取 IDE 配置，不会修改。'))].join(isEn() ? ' ' : '')}</p>` : ''}`),
     rowHtml('how',
       `<span class="xic set">?</span><span class="xmain"><b>${esc(t('工作原理'))}</b><span class="muted">${esc(t('为什么要给每个项目指定账号'))}</span></span>`,
       `<p style="margin-top:0">${t('{store}按 <b>“网站 + 用户名”</b> 保存 token。项目地址里如果没写用户名，同一网站的项目只能共用一份 token：拉一个项目时换了 token，就会把别的项目顶掉。', { store: esc(store) })}</p>

@@ -739,6 +739,34 @@ function findSourcetree() {
   return c.find(p => p && fs.existsSync(p)) || '';
 }
 
+// JetBrains IDE 默认用 `git -c credential.helper= …` 跑 git，绕过系统密码库，推送时会弹 “Log In to GitHub”。
+// 只有 Settings → Version Control → Git 勾了 “Use credential helper”（git.xml 里的 USE_CREDENTIAL_HELPER）才会用到本工具存的 token。
+// 只读，不改 IDE 配置；每个产品只看最新版本的配置目录（旧版本目录升级后还留着）
+const IDE_NAMES = { IdeaIC: 'IntelliJ IDEA CE', IntelliJIdea: 'IntelliJ IDEA', PyCharmCE: 'PyCharm CE', AndroidStudio: 'Android Studio' };
+function jetbrainsIdes() {
+  const base = IS_WIN ? process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming')
+    : IS_MAC ? path.join(HOME, 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME || path.join(HOME, '.config');
+  const latest = {};
+  for (const vendor of ['JetBrains', 'Google']) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(base, vendor)); } catch (e) { continue; }
+    for (const n of names) {
+      const m = /^([A-Za-z]+?)(\d{4})\.(\d+)$/.exec(n);
+      if (!m || /^JetBrains(Client|Gateway)$/.test(m[1]) || (vendor === 'Google') !== m[1].startsWith('AndroidStudio')) continue;
+      const dir = path.join(base, vendor, n, 'options');
+      const ver = +m[2] * 100 + +m[3];
+      if (fs.existsSync(dir) && (!latest[m[1]] || latest[m[1]].ver < ver)) latest[m[1]] = { product: m[1], version: m[2] + '.' + m[3], ver, dir };
+    }
+  }
+  return Object.values(latest).map(x => {
+    const file = path.join(x.dir, 'git.xml');
+    let xml = '';
+    try { xml = fs.readFileSync(file, 'utf8'); } catch (e) { /* 没有 git.xml = 没开 */ }
+    return { name: (IDE_NAMES[x.product] || x.product) + ' ' + x.version, file,
+      helper: /<option\s+name="USE_CREDENTIAL_HELPER"\s+value="true"/.test(xml) };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 async function sysInfo() {
   const [ver, helper] = await Promise.all([
     git(['--version'], { timeout: 10000 }),
@@ -752,6 +780,7 @@ async function sysInfo() {
     home: HOME,
     docs: docsDir && fs.existsSync(docsDir) ? docsDir : '',
     sourcetree: findSourcetree(),
+    ides: jetbrainsIdes(),
     confPath,
   };
 }
