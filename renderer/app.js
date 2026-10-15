@@ -1196,6 +1196,14 @@ window.addEventListener('drop', e => {
   addPaths(paths);
 });
 
+// 切回窗口时重新看一眼 JetBrains IDE 的设置：用户多半是刚去 IDE 里勾了 “Use credential helper”
+window.addEventListener('focus', () => {
+  if (!S || !S.sys) return;
+  call('ides').then(ides => {
+    if (JSON.stringify(ides) !== JSON.stringify(S.sys.ides || [])) { S.sys.ides = ides; render(); }
+  }).catch(() => {});
+});
+
 initLang();
 renderStatic();
 call('setLang', { lang: window.I18N.getLang() }).catch(() => {});

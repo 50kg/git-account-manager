@@ -743,6 +743,31 @@ function findSourcetree() {
 // 只有 Settings → Version Control → Git 勾了 “Use credential helper”（git.xml 里的 USE_CREDENTIAL_HELPER）才会用到本工具存的 token。
 // 只读，不改 IDE 配置；每个产品只看最新版本的配置目录（旧版本目录升级后还留着）
 const IDE_NAMES = { IdeaIC: 'IntelliJ IDEA CE', IntelliJIdea: 'IntelliJ IDEA', PyCharmCE: 'PyCharm CE', AndroidStudio: 'Android Studio' };
+
+// IDE 勾选后立刻生效，但 git.xml 要等自动保存 / 退出才写盘。日志里最近一次 git 命令带不带 `-c credential.helper=` 才是现在的真实状态
+function ideLogPath(vendor, dirName) {
+  if (IS_WIN) return path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), vendor, dirName, 'log', 'idea.log');
+  if (IS_MAC) return path.join(HOME, 'Library', 'Logs', vendor, dirName, 'idea.log');
+  return path.join(process.env.XDG_CACHE_HOME || path.join(HOME, '.cache'), vendor, dirName, 'log', 'idea.log');
+}
+
+function lastIdeGitCall(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size, len = Math.min(size, 2 * 1024 * 1024);  // 日志可能很大，只读结尾
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      // 2026-10-15 13:55:58,511 [...] INFO - #git4idea.commands.GitHandler - [lingke-ai] git -c core.quotepath=false … fetch …
+      const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)\S* .*#git4idea\.commands\.GitHandler - (?:\[[^\]]*\] )?git (-c .*)$/.exec(lines[i]);
+      if (m) return { time: new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime(), helper: !/(^|\s)-c credential\.helper=(\s|$)/.test(m[7]) };
+    }
+  } catch (e) { /* 没有日志 */ } finally { if (fd != null) fs.closeSync(fd); }
+  return null;
+}
+
 function jetbrainsIdes() {
   const base = IS_WIN ? process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming')
     : IS_MAC ? path.join(HOME, 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME || path.join(HOME, '.config');
@@ -755,15 +780,16 @@ function jetbrainsIdes() {
       if (!m || /^JetBrains(Client|Gateway)$/.test(m[1]) || (vendor === 'Google') !== m[1].startsWith('AndroidStudio')) continue;
       const dir = path.join(base, vendor, n, 'options');
       const ver = +m[2] * 100 + +m[3];
-      if (fs.existsSync(dir) && (!latest[m[1]] || latest[m[1]].ver < ver)) latest[m[1]] = { product: m[1], version: m[2] + '.' + m[3], ver, dir };
+      if (fs.existsSync(dir) && (!latest[m[1]] || latest[m[1]].ver < ver)) latest[m[1]] = { product: m[1], version: m[2] + '.' + m[3], ver, dir, log: ideLogPath(vendor, n) };
     }
   }
   return Object.values(latest).map(x => {
     const file = path.join(x.dir, 'git.xml');
-    let xml = '';
-    try { xml = fs.readFileSync(file, 'utf8'); } catch (e) { /* 没有 git.xml = 没开 */ }
+    let xml = '', saved = 0;
+    try { xml = fs.readFileSync(file, 'utf8'); saved = fs.statSync(file).mtimeMs; } catch (e) { /* 没有 git.xml = 没开 */ }
+    const call = lastIdeGitCall(x.log);
     return { name: (IDE_NAMES[x.product] || x.product) + ' ' + x.version, file,
-      helper: /<option\s+name="USE_CREDENTIAL_HELPER"\s+value="true"/.test(xml) };
+      helper: call && call.time > saved ? call.helper : /<option\s+name="USE_CREDENTIAL_HELPER"\s+value="true"/.test(xml) };
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -914,6 +940,7 @@ function upsertAccount(c, fields) {
 
 const api = {
   state,
+  async ides() { return jetbrainsIdes(); },
 
   async addRepos({ paths }) {
     const found = [];
