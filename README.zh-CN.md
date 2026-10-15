@@ -17,6 +17,20 @@
 
 </div>
 
+## ❤️赞助商
+
+<details open>
+<summary>点击折叠</summary>
+
+<table>
+<tr>
+<td width="180" align="center"><a href="https://lingkeai.ai/zh-CN"><img src="docs/sponsors/lingkeai.png" alt="灵客 AI" width="64"><br><b>灵客 AI</b></a></td>
+<td>感谢灵客 AI 赞助了本项目！灵客 AI 是一个 AI 大模型聚合平台，主打 <strong>AI 智能体</strong>：从文案到成片，全流程交给 AI。<strong>AI 漫剧</strong>输入剧情文案，自动拆分镜、生成角色、台词、配音和视频；<strong>故事转视频</strong>把长文本做成带字幕、旁白和背景音乐的叙事视频；<strong>智能多帧</strong>用几张参考图生成连贯的长视频；还有<strong>音乐 MV</strong>、<strong>爆款复刻</strong>、<strong>数字人</strong>等智能体。平台同时聚合 500+ 主流大模型，对话、绘画、视频一个账号全搞定。通过<a href="https://lingkeai.ai/zh-CN">此链接</a>注册即送<strong>新人免费大礼包</strong>，智能体、绘画、视频、对话都能免费开用！</td>
+</tr>
+</table>
+
+</details>
+
 ---
 
 ## 为什么需要它

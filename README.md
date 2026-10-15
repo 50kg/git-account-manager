@@ -17,6 +17,20 @@ English · [简体中文](README.zh-CN.md)
 
 </div>
 
+## ❤️ Sponsors
+
+<details open>
+<summary>Click to collapse</summary>
+
+<table>
+<tr>
+<td width="180" align="center"><a href="https://lingkeai.ai/"><img src="docs/sponsors/lingkeai.png" alt="LingkeAI" width="64"><br><b>LingkeAI</b></a></td>
+<td>Thanks to LingkeAI for sponsoring this project! LingkeAI is an AI model hub built around <strong>AI agents</strong> that take you from script to finished video: <strong>AI Comic Drama</strong> turns a story into storyboards, characters, dialogue, voice-over and video; <strong>Story to Video</strong> turns long text into a narrated video with subtitles and background music; <strong>Multi-frame</strong> builds a coherent long video from a few reference images; plus <strong>Music MV</strong>, <strong>viral video remake</strong> and <strong>digital human</strong> agents. 500+ leading models for chat, images and video are available under the same account. Sign up through <a href="https://lingkeai.ai/">this link</a> to get a <strong>free starter pack</strong>!</td>
+</tr>
+</table>
+
+</details>
+
 ---
 
 ## Why

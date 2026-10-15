@@ -127,6 +127,8 @@ tr:first-child td { border-top: 0; }
 .links { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; }
 .links a { color: var(--accent); text-decoration: none; }
 .links a:hover { text-decoration: underline; }
+.path-link { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.path-link:hover { text-decoration-style: solid; }
 a.btn { text-decoration: none; display: inline-block; }
 
 .chip-btn { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
@@ -275,7 +277,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 30px; cursor
 .xsite.lg svg { width: 30px; height: 30px; }
 .xpick { width: 210px; flex: none; }
 .xpick .acc-picker { padding: 4px 8px; }
-.xstate { font-size: 12px; font-weight: 600; white-space: nowrap; width: 92px; text-align: right; flex: none; color: var(--muted); }
+.xstate { font-size: 12px; font-weight: 600; white-space: nowrap; width: 112px; text-align: right; flex: none; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .xstate.ok { color: var(--ok); }
 .xstate.bad { color: var(--bad); }
 .mini-badge.t-other { background: var(--info-soft); color: var(--muted); }
@@ -315,7 +317,7 @@ button.stat.acc b { color: var(--accent); }
 .pill { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; flex: none; }
 .pill.dirty { background: var(--warn-soft); color: var(--warn); }
 .pill.ahead { background: var(--accent-soft); color: var(--accent); }
-.xstate-btn { font: inherit; font-size: 12px; font-weight: 600; width: 92px; flex: none; padding: 3px 0; border-radius: 999px; border: 0;
+.xstate-btn { font: inherit; font-size: 12px; font-weight: 600; width: 112px; flex: none; padding: 3px 0; border-radius: 999px; border: 0;
   background: var(--accent); color: #fff; cursor: pointer; }
 .xstate-btn:hover { filter: brightness(1.08); }
 .act-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; align-self: center; }

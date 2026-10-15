@@ -1,6 +1,6 @@
 'use strict';
 // Git 账号管家 —— Electron 主进程：窗口、对话框、把界面的请求转给 core.js
-const { app, BrowserWindow, ipcMain, dialog, shell, net, session, clipboard, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, net, session, clipboard, nativeImage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const core = require('./core');
@@ -53,6 +53,14 @@ const mainOnly = {
     if (err) throw new Error(err);
     return true;
   },
+  // 打开 ~/.ssh（还没有就先建好）
+  async openSshDir() {
+    const dir = path.join(require('os').homedir(), '.ssh');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const err = await shell.openPath(dir);
+    if (err) throw new Error(err);
+    return true;
+  },
   async exportFile() {
     const r = await dialog.showSaveDialog(win, { title: '导出账号配置', defaultPath: 'git-账号配置.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (r.canceled || !r.filePath) return null;
@@ -88,9 +96,11 @@ const mainOnly = {
   // 在项目目录打开终端
   async openTerminal({ path: p }) {
     if (!(await core.hasRepo(p))) throw new Error('不认识这个项目');
+    if (!fs.existsSync(p)) throw new Error('目录不存在：' + p);
     const { spawn } = require('child_process');
+    // Windows：路径不能写进命令行（Node 会把里面的引号转义成 \"，cmd 不认），用 cwd 传，start 开的新窗口会继承它
     const child = process.platform === 'darwin' ? spawn('open', ['-a', 'Terminal', p], { detached: true, stdio: 'ignore' })
-      : process.platform === 'win32' ? spawn('cmd.exe', ['/c', 'start', '', 'cmd.exe', '/K', 'cd /d "' + p + '"'], { detached: true, stdio: 'ignore', windowsHide: false })
+      : process.platform === 'win32' ? spawn('cmd.exe', ['/d', '/c', 'start', '', 'cmd.exe'], { cwd: p, detached: true, stdio: 'ignore', windowsHide: false })
       : spawn('x-terminal-emulator', [], { cwd: p, detached: true, stdio: 'ignore' });
     child.unref();
     return true;
@@ -158,7 +168,12 @@ app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(
 app.on('window-all-closed', () => app.quit());
 
 app.whenReady().then(async () => {
+  // Windows 上默认菜单（File / Edit / View / Window）会出现在窗口里，还是英文的：去掉。输入框的复制粘贴不靠它
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
+  // “文档”被重定向到连不上的位置时 getPath 会抛错，不能因此打不开窗口
+  let documents = '';
+  try { documents = app.getPath('documents'); } catch (e) { /* 退回到 ~/Documents */ }
   core.init({ dataDir: app.getPath('userData'), fetchImpl: (url, opts) => net.fetch(url, opts), env: await systemProxyEnv(),
-    trashImpl: p => shell.trashItem(p) });
+    trashImpl: p => shell.trashItem(p), documents });
   createWindow();
 });

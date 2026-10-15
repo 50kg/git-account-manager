@@ -15,6 +15,17 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const fmtTime = t => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '';
 const HOST_NAMES = { 'github.com': 'GitHub', 'gitee.com': 'Gitee', 'gitlab.com': 'GitLab', 'e.coding.net': 'Coding' };
 const hostName = h => HOST_NAMES[h] || h;
+const IS_MAC = /Mac/.test(navigator.platform);
+const isWin = () => S.sys.platform === 'Windows';
+const trashName = () => isWin() ? '回收站' : '废纸篓';
+const storeName = () => isWin() ? 'Windows 凭据管理器' : '钥匙串';
+// 同一个文件：Windows 上项目里记的是 C:/…，账号里是 C:\…
+const sameFile = (x, y) => !!x && !!y && x.replace(/\\/g, '/').toLowerCase() === y.replace(/\\/g, '/').toLowerCase();
+// 别的工具存 token 时常用的占位用户名（git 不核对用户名）：验证过的就显示网站上的真实账号
+const PLACEHOLDER_USER = /^(x-access-token|oauth2|x-oauth-basic)$/i;
+const placeholderOf = a => a.auth === 'token' && PLACEHOLDER_USER.test(a.username) && a.verify && a.verify.login ? a.username : '';
+const loginOf = a => placeholderOf(a) ? a.verify.login : a.username;
+const storedAs = a => placeholderOf(a) ? `<span title="别的工具用占位用户名 ${esc(a.username)} 存的 token（git 只认 token，不核对用户名），实际账号是 ${esc(a.verify.login)}">存为 ${esc(a.username)}</span>` : '';
 
 // 账号对应的官网页面（在浏览器打开；设置类页面显示的是浏览器里当前登录的那个账号）
 function siteLinks(host, user) {
@@ -132,14 +143,14 @@ function switchTab(t) {
 // ================================================================ 项目
 
 const accById = id => S.accounts.find(a => a.id === id);
-const accName = a => a ? a.username + (a.label ? `（${a.label}）` : '') : '';
+const accName = a => a ? loginOf(a) + (a.label ? `（${a.label}）` : '') : '';
 const accKind = a => a.auth === 'ssh' ? 'SSH' : 'Token';
 const bindable = r => (r.proto === 'https' || r.proto === 'ssh') && !r.viaProxy;
 const groupOf = r => r.nhost || (r.proto === 'none' ? '没有远程仓库' : '其他');
 
 function needsAttention(r) {
   if (!r.exists || r.secretInUrl || r.tokenAccess === 'missing') return true;
-  if (r.test && r.test.kind !== 'ok') return true;
+  if (r.test && r.remote && r.test.kind !== 'ok') return true;
   if (!bindable(r)) return false;
   if (r.bindStatus === 'unknown_user' || r.bindStatus === 'unknown_key') return true;
   return !!(r.suggestId && r.suggestId !== r.boundId);
@@ -163,7 +174,7 @@ function repoChips(r) {
   if (r.tokenAccess === 'missing') c.push('<span class="chip bad" title="这个 token 能访问的仓库列表里没有它。请 token 的主人在 GitHub 上把这个仓库加进授权">token 授权里没有这个仓库</span>');
   else if (r.tokenAccess === 'read') c.push('<span class="chip warn">token 只能读，不能推送</span>');
   else if (r.tokenAccess === 'push') c.push('<span class="chip ok">token 可推送</span>');
-  if (r.test && !testing.has(r.path)) c.push(`<span class="chip ${r.test.kind === 'ok' ? 'ok' : 'bad'}" title="${esc((r.test.detail || '') + '\n测试时间：' + fmtTime(r.test.time))}">${esc(r.test.msg)}</span>`);
+  if (r.test && r.remote && !testing.has(r.path)) c.push(`<span class="chip ${r.test.kind === 'ok' ? 'ok' : 'bad'}" title="${esc((r.test.detail || '') + '\n测试时间：' + fmtTime(r.test.time))}">${esc(r.test.msg)}</span>`);
   if (r.suggestId && r.suggestId !== r.boundId && bindable(r)) c.push(`<span class="chip acc" title="这个账号能访问该仓库">建议：${esc(accName(accById(r.suggestId)))}</span>`);
   return c.join('');
 }
@@ -191,7 +202,7 @@ function accountPicker(r, compact) {
   if (!bindable(r)) return '<span class="muted">—</span>';
   const a = accById(r.boundId);
   let inner;
-  if (a) inner = `<span class="ic">${siteIcon(a.host)}</span><span class="nm" title="${esc(accName(a))}">${esc(a.username)}</span><span class="mini-badge t-${typeOf(a)}">${a.auth === 'ssh' ? 'SSH' : 'Token'}</span>`;
+  if (a) inner = `<span class="ic">${siteIcon(a.host)}</span><span class="nm" title="${esc(accName(a))}">${esc(loginOf(a))}</span><span class="mini-badge t-${typeOf(a)}">${a.auth === 'ssh' ? 'SSH' : 'Token'}</span>`;
   else {
     const label = r.bindStatus === 'unknown_user' ? `用户 ${r.user}（未登记）` : r.bindStatus === 'unknown_key' ? 'SSH 指定密钥（未登记）'
       : r.bindStatus === 'default_ssh' ? 'SSH 默认密钥' : '不指定账号';
@@ -215,11 +226,11 @@ function openPicker(p, trigger) {
   const r = S.repos.find(x => x.path === p);
   const accs = S.accounts.filter(a => a.host === r.nhost || a.host === r.host)
     .map(a => ({ a, acc: accessFor(a, r) }))
-    .sort((x, y) => (y.a.id === r.suggestId) - (x.a.id === r.suggestId) || y.acc[2] - x.acc[2] || x.a.username.localeCompare(y.a.username));
+    .sort((x, y) => (y.a.id === r.suggestId) - (x.a.id === r.suggestId) || y.acc[2] - x.acc[2] || loginOf(x.a).localeCompare(loginOf(y.a)));
   const item = ({ a, acc }) => `
     <div class="picker-item${a.id === r.boundId ? ' current' : ''}" data-pick="${a.id}">
       <span class="ic">${siteIcon(a.host)}</span>
-      <span class="tx"><b>${esc(a.username)}${a.label ? ` <span class="muted">· ${esc(a.label)}</span>` : ''}${a.id === r.suggestId ? ' <span class="tag">推荐</span>' : ''}</b>
+      <span class="tx"><b>${esc(loginOf(a))}${a.label ? ` <span class="muted">· ${esc(a.label)}</span>` : ''}${placeholderOf(a) ? ` <span class="muted">· ${storedAs(a)}</span>` : ''}${a.id === r.suggestId ? ' <span class="tag">推荐</span>' : ''}</b>
         <small class="${acc[0]}">${acc[0] === 'ok' ? '✓ ' : acc[0] === 'bad' ? '✕ ' : acc[0] === 'warn' ? '! ' : ''}${esc(acc[1])}</small></span>
       ${a.id === r.boundId ? '<span class="check">✓</span>' : ''}
     </div>`;
@@ -278,7 +289,7 @@ const FILTERS = {
   attention: needsAttention,
   behind: r => r.behind > 0,
   dirty: r => r.dirty > 0,
-  fail: r => r.test && r.test.kind !== 'ok',
+  fail: r => !!(r.test && r.remote && r.test.kind !== 'ok'),
 };
 function visibleRepos() {
   const q = F.q.toLowerCase();
@@ -292,12 +303,13 @@ function renderRepos() {
   const repos = S.repos;
   const nSuggest = repos.filter(r => r.suggestId && r.suggestId !== r.boundId && bindable(r)).length;
   const head = `<div class="head"><h1>项目</h1>
-    <button class="btn" data-act="pick">添加项目…</button>
+    <button class="btn" data-act="pick" title="把电脑上已有的项目加进来">添加项目…</button>
+    <button class="btn" data-act="cloneUrl" title="填写仓库地址、选一个账号，拉到本地">拉取仓库…</button>
     ${repos.length ? `<button class="btn" data-act="testAll" title="对列表里的项目逐个 git fetch：看连不连得上、远程有没有新提交">检查更新</button>
     <button class="btn ${nSuggest ? 'primary' : ''}" data-act="autoBind" ${nSuggest ? '' : 'disabled'}>按建议绑定（${nSuggest}）</button>` : ''}</div>`;
   if (!repos.length) {
     el.innerHTML = head + `<div class="dropzone"><b>把项目文件夹拖到这里</b>可以一次拖多个；拖入普通文件夹时，会添加里面的 Git 项目。<br><br>
-      <button class="btn primary" data-act="pick">选择文件夹…</button></div>`;
+      <button class="btn primary" data-act="pick">选择文件夹…</button> <button class="btn" data-act="cloneUrl">从地址拉取仓库…</button></div>`;
     return;
   }
   const list = visibleRepos();
@@ -313,7 +325,7 @@ function renderRepos() {
         `<button class="stat ${tone}${F.filter === k ? ' on' : ''}" data-act="filter" data-f="${k}" title="${k === 'all' ? '显示全部' : '只看' + label + '的项目'}"><b>${n}</b><span>${label}</span></button>`).join('')}
     </div>
     <div class="toolbar">
-      <input id="q" placeholder="搜索项目名 / 路径 / 地址（⌘F）" value="${esc(F.q)}" style="flex:1;min-width:200px">
+      <input id="q" placeholder="搜索项目名 / 路径 / 地址（${IS_MAC ? '⌘F' : 'Ctrl+F'}）" value="${esc(F.q)}" style="flex:1;min-width:200px">
       <span class="muted">也可以直接把文件夹拖进窗口</span>
     </div>
     ${!list.length ? '<div class="empty">没有符合条件的项目</div>' : order.map(g => `
@@ -339,6 +351,8 @@ function repoRow(r) {
   const ok = r.test && r.test.kind === 'ok';
   const st = pulling.has(r.path) ? '<span class="xstate"><span class="spin"></span> 拉取中</span>'
     : testing.has(r.path) ? '<span class="xstate"><span class="spin"></span> 检查中</span>'
+    : !r.exists ? '<span class="xstate bad" title="目录不存在或已不是 Git 项目">✕ 目录不存在</span>'
+    : !r.remote ? '<span class="xstate" title="没有配置远程仓库，只在本机">仅本地</span>'
     : r.test && !ok ? `<span class="xstate bad" title="${esc(r.test.msg + (r.test.detail ? '\n' + r.test.detail : ''))}">✕ ${esc(r.test.msg.split(/[：（]/)[0])}</span>`
     : r.behind > 0 ? `<button class="xstate-btn" data-act="pull" data-path="${esc(r.path)}" title="远程有 ${r.behind} 个新提交，点击拉取（只做快进，不会覆盖你的改动）">↓ 拉取 ${r.behind}</button>`
     : ok ? `<span class="xstate ok" title="检查于 ${fmtTime(r.test.time)}">✓ ${r.upstream ? '已是最新' : '可连接'}</span>`
@@ -414,6 +428,9 @@ async function testMany(paths) {
   return bad;
 }
 
+// 没有远程仓库的项目不用测（只在本机，测了也只会报“没有配置远程仓库”）
+const withRemote = paths => paths.filter(p => (S.repos.find(r => r.path === p) || {}).remote);
+
 async function addPaths(paths) {
   if (!paths.length) return;
   try {
@@ -423,7 +440,7 @@ async function addPaths(paths) {
     if (!r.found) return toast('没有在拖入的文件夹里找到 Git 项目', true);
     if (!r.added.length) return toast('这些项目都已经在列表里了');
     toast(`添加了 ${r.added.length} 个项目，正在逐个测试`);
-    await testMany(r.added);
+    await testMany(withRemote(r.added));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -479,8 +496,8 @@ function accountRow(a) {
   const state = !v ? '<span class="xstate muted">未验证</span>'
     : `<span class="xstate ${v.info ? '' : v.ok ? 'ok' : 'bad'}" title="${esc(v.msg)}">${v.info ? 'ℹ︎ 见详情' : v.ok ? '✓ 正常' : '✕ 有问题'}</span>`;
   const head = `<span class="xsite lg">${siteIcon(a.host)}</span>
-    <span class="xmain"><b class="selectable">${esc(a.username)}</b>${a.label ? `<span class="chip">${esc(a.label)}</span>` : ''}
-      <span class="muted">${esc(hostName(a.host))}${a.auto ? ' · 本机自动识别' : ''}</span></span>
+    <span class="xmain"><b class="selectable">${esc(loginOf(a))}</b>${a.label ? `<span class="chip">${esc(a.label)}</span>` : ''}
+      <span class="muted">${esc(hostName(a.host))}${placeholderOf(a) ? ' · ' + storedAs(a) : ''}${a.auto ? ' · 本机自动识别' : ''}</span></span>
     <span class="mini-badge t-${typeOf(a)}">${typeLabel(a)}</span>
     <span class="xmeta">${used ? used + ' 个项目在用' : '没有项目在用'}</span>
     ${state}`;
@@ -494,11 +511,11 @@ function accountRow(a) {
   const body = `
     <div class="kvgrid wide">
       <span>凭据</span><div class="chips" style="margin:0">${cred}${a.ssh443 ? '<span class="chip">走 443 端口</span>' : ''}</div>
-      <span>验证</span><div>${verifyLine}${v && v.warn ? `<div class="chip warn" style="white-space:normal;margin-top:6px">${esc(v.warn)}</div>` : ''}</div>
-      <span>负责</span><b>${esc((a.owners || []).join(', '))}</b>
+      <span>验证</span><div>${verifyLine}${v && v.warn && !placeholderOf(a) ? `<div class="chip warn" style="white-space:normal;margin-top:6px">${esc(v.warn)}</div>` : ''}</div>
+      <span>负责</span><b>${esc((a.owners || []).filter(o => !PLACEHOLDER_USER.test(o)).join(', '))}</b>
       ${used ? `<span>在用项目</span><b>${S.repos.filter(r => r.boundId === a.id).map(r => esc(r.name)).join('、')}</b>` : ''}
       ${repoChipsHtml ? `<span>能访问的仓库<small>点仓库名可直接拉到本地</small></span><div>${repoChipsHtml}</div>` : ''}
-      <span>网站</span><div class="links">${siteLinks(a.host, a.username).map(l => linkHtml(l, l[0] === '主页' || l[0] === '官网' ? l[1] : l[1] + '\n（显示的是浏览器里当前登录的账号，不一定是 ' + a.username + '）')).join('')}</div>
+      <span>网站</span><div class="links">${siteLinks(a.host, loginOf(a)).map(l => linkHtml(l, l[0] === '主页' || l[0] === '官网' ? l[1] : l[1] + '\n（显示的是浏览器里当前登录的账号，不一定是 ' + loginOf(a) + '）')).join('')}</div>
     </div>
     <div class="acts body-acts">
       <button class="btn sm" data-act="verify" data-id="${a.id}">重新验证</button>
@@ -509,6 +526,7 @@ function accountRow(a) {
   return rowHtml('a:' + a.id, head, body);
 }
 
+const SSH_DIR_LINK = '<button class="path-link" data-act="openSsh" title="打开这个文件夹">~/.ssh</button>';
 const UPLOAD_HOSTS = ['github.com', 'gitee.com', 'gitlab.com'];
 const uploaders = host => S.accounts.filter(a => a.auth === 'token' && a.hasToken && a.secretKind === 'token' &&
   UPLOAD_HOSTS.includes(a.host) && (!host || a.host === host));
@@ -517,10 +535,10 @@ const uploaders = host => S.accounts.filter(a => a.auth === 'token' && a.hasToke
 function accountGroups() {
   const order = Object.keys(HOST_NAMES);
   const rank = a => { const i = order.indexOf(a.host); return i < 0 ? 99 : i; };
-  const sorted = list => list.slice().sort((x, y) => rank(x) - rank(y) || x.username.localeCompare(y.username));
+  const sorted = list => list.slice().sort((x, y) => rank(x) - rank(y) || loginOf(x).localeCompare(loginOf(y)));
   const groups = [
     ['https', 'HTTPS · Token / 密码', '在网站上生成的一串 token（或网站登录密码），存在系统密码库里', S.accounts.filter(a => a.auth !== 'ssh')],
-    ['ssh', 'SSH · 密钥', '本机 ~/.ssh 里的密钥文件，公钥登记在网站上', S.accounts.filter(a => a.auth === 'ssh')],
+    ['ssh', 'SSH · 密钥', `本机 ${SSH_DIR_LINK} 里的密钥文件，公钥登记在网站上`, S.accounts.filter(a => a.auth === 'ssh')],
   ];
   return groups.filter(g => g[3].length).map(([type, title, desc, list]) => `
     <div class="acc-group type-${type}">
@@ -552,7 +570,7 @@ function localKeysHtml() {
   if (!keys.length) return '';
   return `<div class="card">
     <h2>本机还没对应到账号的 SSH 密钥（${keys.length}）</h2>
-    <p>这些密钥在 ~/.ssh 里，但还没识别出属于哪个账号：可能还没登记到网站，或者网络暂时连不上。</p>
+    <p>这些密钥在 ${SSH_DIR_LINK} 里，但还没识别出属于哪个账号：可能还没登记到网站，或者网络暂时连不上。</p>
     ${keys.map(k => `<div class="found"><div class="grow"><span class="t">${esc(k.file)}</span> <span class="muted">${esc(k.type)} ${esc(k.comment)}</span>
         ${k.encrypted ? ' <span class="chip">有密码保护</span>' : ''}
         ${k.errors && k.errors.length ? `<div class="ppath">${esc(k.errors.join('；'))}</div>` : ''}</div>
@@ -568,7 +586,7 @@ function renderAccounts() {
   el.innerHTML = `
     <div class="head"><h1>账号</h1>
       <span class="muted">${syncing ? '<span class="spin"></span> 正在读取本机的账号和密钥…' : S.lastSync ? '已同步本机账号 · ' + fmtTime(S.lastSync) : ''}</span>
-      <button class="btn" data-act="sync" ${syncing ? 'disabled' : ''} title="重新读取钥匙串和 ~/.ssh 里的账号">刷新</button>
+      <button class="btn" data-act="sync" ${syncing ? 'disabled' : ''} title="重新读取${storeName()}和 ~/.ssh 里的账号">刷新</button>
       <button class="btn primary" data-act="genKey">生成 SSH 密钥</button>
       <button class="btn help-btn" data-act="help" title="token 和 SSH 有什么区别？">?</button></div>
     <div class="card">
@@ -664,12 +682,12 @@ async function generateKeyDialog() {
       const host = back.querySelector('#f-host').value;
       back.querySelector('#f-acc').innerHTML = accOpts(host);
       const a = accById(back.querySelector('#f-acc').value);
-      back.querySelector('#f-name').value = uniqueKeyName(`id_ed25519_${host.split('.')[0]}${a ? '_' + a.username.replace(/[^A-Za-z0-9._-]/g, '') : ''}`);
+      back.querySelector('#f-name').value = uniqueKeyName(`id_ed25519_${host.split('.')[0]}${a ? '_' + loginOf(a).replace(/[^A-Za-z0-9._-]/g, '') : ''}`);
     };
     back.querySelector('#f-host').onchange = fill;
     back.querySelector('#f-acc').onchange = () => {
       const host = back.querySelector('#f-host').value, a = accById(back.querySelector('#f-acc').value);
-      back.querySelector('#f-name').value = uniqueKeyName(`id_ed25519_${host.split('.')[0]}${a ? '_' + a.username.replace(/[^A-Za-z0-9._-]/g, '') : ''}`);
+      back.querySelector('#f-name').value = uniqueKeyName(`id_ed25519_${host.split('.')[0]}${a ? '_' + loginOf(a).replace(/[^A-Za-z0-9._-]/g, '') : ''}`);
     };
     const firstHost = (uploaders()[0] || {}).host;
     if (firstHost) back.querySelector('#f-host').value = firstHost;
@@ -752,9 +770,9 @@ async function manualAdd() {
 async function editAccount(id) {
   const a = accById(id);
   const html = `<div class="form">
-    <label>账号</label><div><b>${esc(a.username)}</b> <span class="muted">· ${esc(hostName(a.host))} · ${a.auth === 'ssh' ? 'SSH' : 'Token'}</span></div>
+    <label>账号</label><div><b>${esc(loginOf(a))}</b> <span class="muted">· ${esc(hostName(a.host))} · ${a.auth === 'ssh' ? 'SSH' : 'Token'}${placeholderOf(a) ? ' · ' + storedAs(a) : ''}</span></div>
     <label>备注</label><input id="f-label" value="${esc(a.label || '')}" placeholder="例如：公司 / 个人">
-    <label>仓库所有者</label><input id="f-owners" value="${esc((a.owners || []).join(', '))}">
+    <label>仓库所有者</label><input id="f-owners" value="${esc((a.owners || []).filter(o => !PLACEHOLDER_USER.test(o)).join(', '))}">
     <div class="hint">这个账号负责哪些用户/组织的仓库（地址里 github.com/<b>这一段</b>/仓库名），用来推荐账号。token 账号验证时会自动补全。</div>
     ${a.auth === 'token' ? `<label>更新 token</label><input id="f-token" type="password" placeholder="留空 = 不改">
       <div class="hint">新 token 必须属于同一个账号。</div>`
@@ -787,45 +805,93 @@ async function showPublicKey(id, keyPath) {
   } catch (e) { toast(e.message, true); }
 }
 
+const localRepo = (host, repo) => S.repos.find(r => r.nhost === normHost(host) && (r.owner + '/' + r.repoName).toLowerCase() === repo.toLowerCase());
+
+// 拉取到本地。从账号的仓库列表点进来时仓库已定（accountId + repo）；
+// 从项目页进来时什么都不给：填仓库地址，按地址里的网站列出账号，也可以不指定账号拉公开仓库
 async function cloneDialog(accountId, repo) {
-  const local = S.repos.find(r => (r.owner + '/' + r.repoName).toLowerCase() === repo.toLowerCase() && r.nhost === accById(accountId).host);
+  const local = repo && localRepo(accById(accountId).host, repo);
   if (local) {
     switchTab('repos'); openRows.add('r:' + local.path); render();
     setTimeout(() => { const el = document.querySelector(`[data-key="r:${CSS.escape(local.path)}"]`); if (el) el.scrollIntoView({ block: 'center' }); });
     return toast('这个仓库已经在本地了：' + shortPath(local.path));
   }
-  const first = accById(accountId);
-  const accs = S.accounts.filter(a => a.host === first.host);
-  const name = repo.split('/').pop();
-  const parent0 = S.cloneDir || (S.sys.home ? S.sys.home + (S.sys.platform === 'Windows' ? '\\Documents' : '/Documents') : '');
-  const sep = S.sys.platform === 'Windows' ? '\\' : '/';
+  const first = repo ? accById(accountId) : null;
+  const sep = isWin() ? '\\' : '/';
+  const parent0 = S.cloneDir || S.sys.docs || (S.sys.home ? S.sys.home + sep + 'Documents' : '');
   const html = `<div class="form">
-    <label>仓库</label><div class="clone-repo"><span class="xsite">${siteIcon(first.host)}</span><b>${esc(repo)}</b></div>
-    <label>用哪个账号</label><select id="f-acc">${accs.map(a => `<option value="${a.id}" ${a.id === accountId ? 'selected' : ''}>${esc(accName(a))} · ${typeLabel(a)}</option>`).join('')}</select>
-    <div class="hint">拉下来后这个项目就绑定这个账号，以后拉取、推送都用它。</div>
+    ${repo ? `<label>仓库</label><div class="clone-repo"><span class="xsite">${siteIcon(first.host)}</span><b>${esc(repo)}</b></div>`
+      : `<label>仓库地址</label><input id="f-url" placeholder="https://github.com/用户/仓库.git 或 git@github.com:用户/仓库.git" spellcheck="false">
+         <div class="hint" id="f-info">也可以直接粘贴浏览器地址栏里的仓库网页地址</div>`}
+    <label>用哪个账号</label><select id="f-acc"></select>
+    <div class="hint" id="f-acc-hint"></div>
     <label>保存到</label><div style="display:flex;gap:6px"><input id="f-parent" value="${esc(parent0)}" spellcheck="false" style="flex:1"><button class="btn sm" id="f-pick">选择…</button></div>
-    <label>文件夹名</label><input id="f-name" value="${esc(name)}" spellcheck="false">
+    <label>文件夹名</label><input id="f-name" value="${esc(repo ? repo.split('/').pop() : '')}" spellcheck="false">
     <div class="hint" id="f-dest"></div>
   </div>`;
+  let parsed = repo ? { host: normHost(first.host), repo } : null;  // 填地址时：主进程解析出来的站点、仓库、推荐账号
+  let parseErr = '';
   const data = await modal('拉取到本地', html, [
     { text: '取消', value: null },
-    { text: '开始拉取', primary: true, value: b => ({ accountId: b.querySelector('#f-acc').value, repo,
-      parent: b.querySelector('#f-parent').value.trim(), name: b.querySelector('#f-name').value.trim() }) },
+    { text: '开始拉取', primary: true, value: b => {
+      const v = { accountId: b.querySelector('#f-acc').value, parent: b.querySelector('#f-parent').value.trim(), name: b.querySelector('#f-name').value.trim() };
+      if (repo) return Object.assign(v, { repo });
+      if (!parsed) { toast(parseErr || '请先填写仓库地址', true); return undefined; }
+      return Object.assign(v, { url: b.querySelector('#f-url').value.trim(), label: parsed.repo });
+    } },
   ], back => {
-    const upd = () => { back.querySelector('#f-dest').textContent = '会拉到：' + back.querySelector('#f-parent').value.replace(/[\\/]+$/, '') + sep + back.querySelector('#f-name').value; };
-    back.querySelector('#f-parent').oninput = upd; back.querySelector('#f-name').oninput = upd; upd();
-    back.querySelector('#f-pick').onclick = async () => {
-      const p = await call('pickDir', { defaultPath: back.querySelector('#f-parent').value });
-      if (p) { back.querySelector('#f-parent').value = p; upd(); }
+    const $$ = s => back.querySelector(s);
+    const upd = () => { $$('#f-dest').textContent = '会拉到：' + $$('#f-parent').value.replace(/[\\/]+$/, '') + sep + $$('#f-name').value; };
+    const accHint = () => {
+      const none = !repo && !(parsed && S.accounts.some(a => normHost(a.host) === parsed.host));
+      $$('#f-acc-hint').textContent = ($$('#f-acc').value ? '拉下来后这个项目就绑定这个账号，以后拉取、推送都用它。'
+        : '不指定账号只能拉公开仓库；拉下来后也可以再给它选账号。') + (parsed && none ? `还没有 ${hostName(parsed.host)} 的账号，私有仓库请先到“账号”页添加。` : '');
+    };
+    // 只列地址里那个网站的账号
+    const fillAccs = pick => {
+      const accs = parsed ? S.accounts.filter(a => normHost(a.host) === parsed.host) : [];
+      // 没有推荐时默认选这个网站的账号（优先和地址同一种方式）
+      if (!pick && parsed && parsed.proto) pick = (accs.find(a => typeOf(a) === parsed.proto) || accs[0] || {}).id;
+      $$('#f-acc').innerHTML = accs.map(a => `<option value="${a.id}" ${a.id === pick ? 'selected' : ''}>${esc(accName(a))} · ${typeLabel(a)}</option>`).join('')
+        + (repo ? '' : `<option value="" ${pick ? '' : 'selected'}>不指定账号（公开仓库）</option>`);
+      accHint();
+    };
+    $$('#f-acc').onchange = accHint;
+    $$('#f-parent').oninput = upd; $$('#f-name').oninput = () => { $$('#f-name').dataset.touched = '1'; upd(); }; upd();
+    $$('#f-pick').onclick = async () => {
+      const p = await call('pickDir', { defaultPath: $$('#f-parent').value });
+      if (p) { $$('#f-parent').value = p; upd(); }
+    };
+    fillAccs(accountId);
+    if (repo) return;
+    let seq = 0;
+    $$('#f-url').oninput = async () => {
+      const my = ++seq, url = $$('#f-url').value.trim(), info = $$('#f-info');
+      const r = url ? await window.gz.call('parseRepoUrl', { url }) : null;  // 不走 call()：边打字边解析，不要闪“处理中”
+      if (my !== seq) return;
+      parsed = r && r.ok ? r.data : null;
+      parseErr = r && !r.ok ? r.error : '';
+      info.classList.toggle('bad-text', !!parseErr);
+      if (!parsed) {
+        info.textContent = parseErr || '也可以直接粘贴浏览器地址栏里的仓库网页地址';
+      } else {
+        const have = localRepo(parsed.host, parsed.repo);
+        info.textContent = `${hostName(parsed.host)} · ${parsed.repo}` + (have ? `（列表里已经有：${shortPath(have.path)}）` : '');
+        if (!$$('#f-name').dataset.touched) $$('#f-name').value = parsed.name;
+      }
+      fillAccs(parsed && parsed.suggestId);
+      upd();
     };
   });
   if (!data) return;
+  const label = repo || data.label;
+  delete data.label;
   // 拉取可能要几分钟：显示一个不能关的进度层
   const t0 = Date.now();
   const over = document.createElement('div');
   over.className = 'modal-back';
   over.innerHTML = `<div class="modal" style="width:min(460px,100%);text-align:center">
-    <div class="spin big"></div><h2 style="margin:14px 0 6px">正在拉取 ${esc(repo)}</h2>
+    <div class="spin big"></div><h2 style="margin:14px 0 6px">正在拉取 ${esc(label)}</h2>
     <p class="muted" style="margin:0">大仓库可能要几分钟，请稍等 · <span id="clone-t">0</span> 秒</p></div>`;
   document.body.appendChild(over);
   const timer = setInterval(() => { const e = over.querySelector('#clone-t'); if (e) e.textContent = Math.round((Date.now() - t0) / 1000); }, 1000);
@@ -846,7 +912,7 @@ async function revealSecret(id) {
   const a = accById(id);
   let r;
   try { r = await call('revealSecret', { id }); } catch (e) { return toast(e.message, true); }
-  const html = `<div class="kv">${esc(hostName(a.host))} · <b>${esc(a.username)}</b> · ${r.kind === 'password' ? '网站登录密码' : 'token'}</div>
+  const html = `<div class="kv">${esc(hostName(a.host))} · <b>${esc(loginOf(a))}</b> · ${r.kind === 'password' ? '网站登录密码' : 'token'}</div>
     <div class="secret selectable">${esc(r.secret)}</div>
     <p class="muted">这是系统密码库里存的原文，注意别截图外传。</p>`;
   const act = await modal('查看原文', html, [{ text: '关闭', value: null }, { text: '复制', primary: true, value: 'copy' }]);
@@ -857,34 +923,35 @@ async function revealSecret(id) {
 
 async function deleteAccount(id) {
   const a = accById(id);
-  const usedBy = S.repos.filter(r => r.boundId === id || (a.auth === 'ssh' && r.sshKey && r.sshKey === a.sshKey));
+  const usedBy = S.repos.filter(r => r.boundId === id || (a.auth === 'ssh' && sameFile(r.sshKey, a.sshKey)));
   const keyFile = a.auth === 'ssh' ? a.sshKey.split(/[\\/]/).pop() : '';
-  const sameKey = a.auth === 'ssh' ? S.accounts.filter(x => x.id !== id && x.auth === 'ssh' && x.sshKey === a.sshKey) : [];
-  const store = S.sys.platform === 'Windows' ? 'Windows 凭据管理器' : '钥匙串';
+  const sameKey = a.auth === 'ssh' ? S.accounts.filter(x => x.id !== id && x.auth === 'ssh' && sameFile(x.sshKey, a.sshKey)) : [];
+  const store = storeName();
   const what = a.auth === 'token'
-    ? `<p>会从本机<b>${store}</b>里删除 <b>${esc(hostName(a.host))} · ${esc(a.username)}</b> 这条${a.secretKind === 'password' ? '登录密码' : ' token'}。<b>删除后无法恢复</b>，以后要用得重新粘贴。</p>`
-    : `<p>会把密钥文件 <b>${esc(keyFile)}</b> 和 <b>${esc(keyFile)}.pub</b> 移到${S.sys.platform === 'Windows' ? '回收站' : '废纸篓'}（删错了可以从那里找回）。</p>
+    ? `<p>会从本机<b>${store}</b>里删除 <b>${esc(hostName(a.host))} · ${esc(loginOf(a))}</b> 这条${a.secretKind === 'password' ? '登录密码' : ' token'}。<b>删除后无法恢复</b>，以后要用得重新粘贴。</p>`
+      + (placeholderOf(a) ? `<p>它是用占位用户名 <b>${esc(a.username)}</b> 存的：本机别的项目或工具如果用 <span class="mono">https://${esc(a.username)}@${esc(a.host)}/…</span> 这种地址，删掉后也会拉不了代码。</p>` : '')
+    : `<p>会把密钥文件 <b>${esc(keyFile)}</b> 和 <b>${esc(keyFile)}.pub</b> 移到${trashName()}（删错了可以从那里找回）。</p>
        ${sameKey.length ? `<p>这把密钥同时登记在：${sameKey.map(x => esc(hostName(x.host) + ' · ' + x.username)).join('、')}，这些账号也会一起消失。</p>` : ''}
        <p class="muted">网站上登记的公钥不会自动删除，需要的话去网站的 SSH 设置里删掉。</p>`;
   const html = what + (usedBy.length ? `<p class="chip warn" style="white-space:normal;display:block;padding:6px 10px">有 ${usedBy.length} 个项目在用它：${usedBy.map(r => esc(r.name)).join('、')}。删除后这些项目会拉不了代码，要给它们换个账号。</p>` : '');
   const buttons = [{ text: '取消', value: null }];
   if (a.auth === 'token' && a.hasToken) buttons.push({ text: '先复制原文', value: 'copy' });
-  buttons.push({ text: a.auth === 'token' ? '从本机删除' : '移到废纸篓', danger: true, value: 'delete' });
+  buttons.push({ text: a.auth === 'token' ? '从本机删除' : '移到' + trashName(), danger: true, value: 'delete' });
   const act = await modal('删除账号', html, buttons);
   if (act === 'copy') {
     try { const r = await call('revealSecret', { id }); await call('copyText', { text: r.secret }); toast('已复制，可以先找个地方保存，再删除'); } catch (e) { toast(e.message, true); }
     return deleteAccount(id);
   }
   if (act !== 'delete') return;
-  try { setState(await call('deleteAccount', { id })); toast(a.auth === 'token' ? `已从本机${store}删除` : '密钥已移到废纸篓'); } catch (e) { toast(e.message, true); }
+  try { setState(await call('deleteAccount', { id })); toast(a.auth === 'token' ? `已从本机${store}删除` : '密钥已移到' + trashName()); } catch (e) { toast(e.message, true); }
 }
 
 async function deleteLocalKey(keyPath) {
   const name = keyPath.split(/[\\/]/).pop();
-  const ok = await modal('删除密钥', `<p>把 <b>${esc(name)}</b> 和 <b>${esc(name)}.pub</b> 移到${S.sys.platform === 'Windows' ? '回收站' : '废纸篓'}？删错了可以从那里找回。</p>`,
-    [{ text: '取消', value: null }, { text: '移到废纸篓', danger: true, value: true }]);
+  const ok = await modal('删除密钥', `<p>把 <b>${esc(name)}</b> 和 <b>${esc(name)}.pub</b> 移到${trashName()}？删错了可以从那里找回。</p>`,
+    [{ text: '取消', value: null }, { text: '移到' + trashName(), danger: true, value: true }]);
   if (!ok) return;
-  try { setState(await call('deleteLocalKey', { path: keyPath })); toast('已移到废纸篓'); } catch (e) { toast(e.message, true); }
+  try { setState(await call('deleteLocalKey', { path: keyPath })); toast('已移到' + trashName()); } catch (e) { toast(e.message, true); }
 }
 
 // ================================================================ 记录与设置
@@ -941,7 +1008,7 @@ function historyRows() {
 
 function renderRecords() {
   const s = S.sys;
-  const store = s.platform === 'Windows' ? 'Windows 凭据管理器' : '钥匙串';
+  const store = storeName();
   const settings = [
     rowHtml('sync',
       `<span class="xic set">⇅</span><span class="xmain"><b>Mac / Windows 同步账号</b><span class="muted">导出 / 导入账号配置，不含 token</span></span>`,
@@ -979,7 +1046,7 @@ async function undo(i) {
 // ================================================================ 事件
 
 const ACTIONS = {
-  pick: async () => { try { const r = await call('pickFolders'); if (r) { setState(r.state); if (r.added.length) { toast(`添加了 ${r.added.length} 个项目，正在逐个测试`); await testMany(r.added); } else toast(r.found ? '这些项目都已经在列表里了' : '没有找到 Git 项目', !r.found); } } catch (e) { toast(e.message, true); } },
+  pick: async () => { try { const r = await call('pickFolders'); if (r) { setState(r.state); if (r.added.length) { toast(`添加了 ${r.added.length} 个项目，正在逐个测试`); await testMany(withRemote(r.added)); } else toast(r.found ? '这些项目都已经在列表里了' : '没有找到 Git 项目', !r.found); } } catch (e) { toast(e.message, true); } },
   testAll: async () => { const ps = visibleRepos().filter(r => r.remote).map(r => r.path); const bad = await testMany(ps); toast(`测试完成：${ps.length - bad} 个正常，${bad} 个失败`, bad > 0); },
   autoBind,
   filter: d => { F.filter = F.filter === d.f ? 'all' : d.f; renderRepos(); },
@@ -995,6 +1062,8 @@ const ACTIONS = {
   genKey: generateKeyDialog,
   help: showHelp,
   cloneRepo: d => cloneDialog(d.id, d.repo),
+  cloneUrl: () => cloneDialog(),
+  openSsh: () => call('openSshDir').catch(e => toast(e.message, true)),
   sourcetree: d => call('openSourcetree', { path: d.path }).catch(e => toast(e.message, true)),
   delKey: d => deleteLocalKey(d.path),
   uploadKey: d => uploadKeyDialog(d.path),
@@ -1031,7 +1100,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); switchTab('repos'); const q = $('#q'); if (q) { q.focus(); q.select(); }
   }
 });
-if (/Mac/.test(navigator.platform)) document.body.classList.add('mac');
+if (IS_MAC) document.body.classList.add('mac');
 
 // 拖拽添加项目
 let dragDepth = 0;

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.1 — 2026-10-15
+
+### New
+- Projects: **Clone repository…** — paste a repository URL (web page URLs such as `…/tree/main` work too), pick an account, or none for public repositories, and clone straight into the project list.
+- Accounts: tokens stored under placeholder usernames such as `x-access-token` are shown under their real login.
+- Click `~/.ssh` to open the folder.
+
+### Windows fixes
+- "Terminal" now opens in the project folder.
+- Accounts already saved in Windows Credential Manager are detected on non-English Windows, and e-mail usernames are no longer misread (`bob@example.com` showed up as `bob_example.com`).
+- Deleting an account removes every Credential Manager entry for it.
+- Timed-out Git operations stop the whole process tree instead of leaving Git/SSH running in the background.
+- Removed the default English menu bar; Windows wording (Recycle Bin, Credential Manager, Ctrl+F).
+- The clone dialog defaults to the system Documents folder, even when it has been moved.
+
+### Other
+- Projects without a remote show "local only" and no longer count as failing.
+- Long status messages no longer overlap the row arrow.
+- `file://` remotes are no longer mistaken for SSH addresses.
+
 ## 1.3.0 — 2026-10-14
 
 First public release.

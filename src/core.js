@@ -19,6 +19,7 @@ const SKIP_DIRS = new Set(['node_modules', '__pycache__', 'venv', '.venv', 'buil
   'vendor', 'Library', 'DerivedData', 'site-packages']);
 
 let confPath = '';
+let docsDir = '';  // 系统的“文档”文件夹（Windows 上可能被挪到别的盘或 OneDrive 里）
 let extraEnv = {};
 let httpFetch = (...a) => fetch(...a);
 // 删除 SSH 密钥时移到废纸篓（Electron 里由主进程传入 shell.trashItem；测试时退化为移到临时目录）
@@ -28,8 +29,9 @@ let trashItem = async p => {
   fs.renameSync(p, path.join(dir, Date.now() + '-' + path.basename(p)));
 };
 
-function init({ dataDir, fetchImpl, env, trashImpl }) {
+function init({ dataDir, fetchImpl, env, trashImpl, documents }) {
   if (trashImpl) trashItem = trashImpl;
+  if (documents) docsDir = documents;
   confPath = path.join(dataDir, 'config.json');
   if (fetchImpl) httpFetch = fetchImpl;
   if (env) extraEnv = env;
@@ -101,7 +103,11 @@ function run(cmd, args, { cwd = HOME, input = null, timeout = 30000, env = null 
       return finish(127, '', e.message);
     }
     timer = setTimeout(() => {
-      try { IS_WIN ? p.kill() : process.kill(-p.pid, 'SIGKILL'); } catch (e) { /* 已退出 */ }
+      // Windows：PATH 里的 git.exe 只是个启动器，只杀它的话真正干活的 git / ssh 会一直挂着，要连子进程一起杀
+      try {
+        if (IS_WIN) spawn('taskkill', ['/pid', String(p.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' }).on('error', () => p.kill());
+        else process.kill(-p.pid, 'SIGKILL');
+      } catch (e) { /* 已退出 */ }
       finish(124, '', `超时（${Math.round(timeout / 1000)} 秒没有响应）`);
     }, timeout);
     p.stdout.setEncoding('utf8');
@@ -133,6 +139,10 @@ function maskSecret(s) {
   return looksLikeToken(s) ? '…' + s.slice(-4) : '•'.repeat(Math.min(s.length, 8));
 }
 const maskUrl = u => String(u || '').replace(/(:\/\/[^/:@]+):[^@/]+@/, '$1:***@');
+
+// 别的工具存 token 时常用的占位用户名（git 只认 token，不核对用户名），真实账号以网站返回的为准
+const PLACEHOLDER_USER = /^(x-access-token|oauth2|x-oauth-basic)$/i;
+const loginOf = a => PLACEHOLDER_USER.test(a.username) && a.verify && a.verify.login ? a.verify.login : a.username;
 
 // ------------------------------------------------------------------ 系统密码库（通过 git credential）
 
@@ -187,7 +197,8 @@ function parseUrl(url) {
     const inner = r.rpath.match(/^https?:\/+([^/]+)\/(.+)$/);
     if (inner) Object.assign(r, { viaProxy: true, rpath: inner[2] });  // https://gh-proxy.com/https://github.com/a/b
   } else {
-    m = url.match(/^ssh:\/\/(?:([^@/]+)@)?([^/]+)\/(.+?)\/?$/) || url.match(/^(?:([^@/]+)@)?([^:/\\]+):(?!\\)(.+?)\/?$/);
+    // file:// 之类的其它协议不能当成 user@host:path 的简写
+    m = url.match(/^ssh:\/\/(?:([^@/]+)@)?([^/]+)\/(.+?)\/?$/) || (!url.includes('://') && url.match(/^(?:([^@/]+)@)?([^:/\\]+):(?!\\)(.+?)\/?$/));
     if (m && !/^[a-zA-Z]$/.test(m[2])) Object.assign(r, { proto: 'ssh', user: m[1] || '', host: m[2], rpath: m[3].replace(/^\/+/, '') });
   }
   if (r.rpath.endsWith('.git')) r.rpath = r.rpath.slice(0, -4);
@@ -318,6 +329,25 @@ function planBind(info, acc) {
   if (acc.ssh443 && normHost(acc.host) === 'github.com') return { url: `ssh://git@ssh.github.com:443/${p}.git`, ssh: cmd };
   if (acc.ssh443 && normHost(acc.host) === 'gitlab.com') return { url: `ssh://git@altssh.gitlab.com:443/${p}.git`, ssh: cmd };
   return { url: `git@${acc.host}:${p}.git`, ssh: cmd };
+}
+
+// 用户填的仓库地址。也接受从浏览器地址栏复制的网页地址（…/tree/main、?tab=readme 之类）和省略 https:// 的写法
+function repoFromUrl(input) {
+  let url = String(input || '').trim();
+  if (/^[\w.-]+\.[a-z]{2,}(:\d+)?\//i.test(url)) url = 'https://' + url;
+  if (/^https?:\/\//i.test(url)) url = url.replace(/[?#].*$/, '');
+  const r = parseUrl(url);
+  if (r.proto !== 'https' && r.proto !== 'ssh') throw new Error('看不懂这个地址：请填 https://… 或 git@…:… 形式的仓库地址');
+  let parts = r.rpath.split('/').filter(Boolean);
+  if (r.proto === 'https' && !r.viaProxy) {
+    if (parts.includes('-')) parts = parts.slice(0, parts.indexOf('-'));  // GitLab 网页：组/项目/-/tree/main
+    if (r.nhost === 'github.com' || r.nhost === 'gitee.com') parts = parts.slice(0, 2);  // 这两个站点的仓库固定是两段
+  }
+  if (parts.length < 2) throw new Error('地址里要有“所有者/仓库名”');
+  const rpath = parts.join('/').replace(/\.git$/, '');
+  return { proto: r.proto, user: r.user, nhost: r.nhost, rpath, owner: parts[0], repoName: rpath.split('/').pop(), viaProxy: r.viaProxy,
+    // 不指定账号时拉取用的地址：HTTPS 去掉用户名、密码和网页后缀；SSH 原样
+    plainUrl: r.proto === 'https' && !r.viaProxy ? `https://${r.host}/${rpath}.git` : url };
 }
 
 async function rawUrl(p, remote) {
@@ -532,7 +562,7 @@ async function verifyAccount(acc) {
   try {
     const i = await inspectToken(c.password, acc.host);
     const v = verifyFromInspect(i);
-    if (i.login.toLowerCase() !== acc.username.toLowerCase()) v.warn = `密码库里这个 token 实际属于 ${i.login}`;
+    if (!PLACEHOLDER_USER.test(acc.username) && i.login.toLowerCase() !== acc.username.toLowerCase()) v.warn = `密码库里这个 token 实际属于 ${i.login}`;
     return v;
   } catch (e) {
     return { ok: false, msg: /不认/.test(e.message) ? 'token 无效、已过期或被撤销' : e.message, time: Date.now() };
@@ -651,25 +681,28 @@ async function scanStoredCreds(extraHosts) {
       if (srvr && acct && wanted.has(normHost(srvr))) found.push({ host: srvr.toLowerCase(), user: acct });
     }
   } else if (IS_WIN) {
-    const r = await run('cmdkey', ['/list'], { timeout: 30000 });
-    let target = null;
-    for (const line of r.stdout.split(/\r?\n/)) {
-      const t = line.match(/target=git:https?:\/\/(?:([^@/\s]+)@)?([^/\s]+)/i);
-      if (t) { target = { host: t[2].toLowerCase(), user: t[1] || '' }; continue; }
-      const u = line.match(/^\s*(?:User|用户)\s*[:：]\s*(.+)$/i);
-      if (u && target) {
-        if (wanted.has(normHost(target.host))) found.push({ host: target.host, user: target.user || u[1].trim() });
-        target = null;
-      }
+    // cmdkey 按控制台代码页输出（中文系统是 GBK），先切到 UTF-8 再读。
+    // 标签随系统语言变（User / 用户 / …），所以按位置取：每条凭据依次是 目标、类型、用户（没有用户名时没这行）
+    const r = await run('cmd.exe', ['/d', '/s', '/c', 'chcp 65001 >nul & cmdkey /list'], { timeout: 30000 });
+    for (const block of r.stdout.split(/\r?\n[ \t]*\r?\n/)) {
+      const t = block.match(/target=git:https?:\/\/(?:([^@/\s]+)@)?([^/\s]+)/i);
+      if (!t || !wanted.has(normHost(t[2]))) continue;
+      const vals = block.split(/\r?\n/).map(l => (l.match(/^[^:：]+[:：]\s*(.*?)\s*$/) || [])[1]).filter(v => v != null);
+      // 同一站点的第二个账号，GCM 起目标名时会把用户名里的 @ 换成 _，所以优先用“用户”那一行
+      found.push({ host: t[2].toLowerCase(), user: vals[2] || t[1] || '' });
     }
   }
   const seen = new Set();
-  return found.filter(f => {
+  const list = found.filter(f => {
     const k = f.host + '|' + f.user.toLowerCase();
     if (seen.has(k) || !f.user || f.user === 'PersonalAccessToken') return false;
     seen.add(k);
     return true;
   });
+  if (!IS_WIN) return list;
+  // 用 git 读一次确认：读不出来的不能当成账号，不然每次同步都会加了又删
+  const ok = await Promise.all(list.map(f => credGet(f.host, f.user)));
+  return list.filter((f, i) => ok[i]);
 }
 
 // ------------------------------------------------------------------ 对外接口
@@ -717,6 +750,7 @@ async function sysInfo() {
     helper: helper.stdout.split(/\s+/).filter(Boolean).join(', '),
     proxy: extraEnv.HTTPS_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || '',
     home: HOME,
+    docs: docsDir && fs.existsSync(docsDir) ? docsDir : '',
     sourcetree: findSourcetree(),
     confPath,
   };
@@ -739,7 +773,7 @@ function unignore(c) { delete c.ignored; }  // 兼容旧配置
 async function trashKey(keyPath) {
   for (const f of [keyPath, keyPath + '.pub']) {
     if (fs.existsSync(f)) {
-      try { await trashItem(f); } catch (e) { throw new Error('没能把 ' + path.basename(f) + ' 移到废纸篓：' + e.message); }
+      try { await trashItem(f); } catch (e) { throw new Error(`没能把 ${path.basename(f)} 移到${IS_WIN ? '回收站' : '废纸篓'}：${e.message}`); }
     }
   }
   await withConf(c => {
@@ -752,7 +786,7 @@ async function trashKey(keyPath) {
 function ensureAccount(c, fields) {
   const a = c.accounts.find(x => accSig(x) === accSig(fields));
   if (a) return { acc: a, isNew: false };
-  const acc = Object.assign({ id: newId(), label: '', owners: [fields.username], auto: true }, fields);
+  const acc = Object.assign({ id: newId(), label: '', owners: PLACEHOLDER_USER.test(fields.username) ? [] : [fields.username], auto: true }, fields);
   c.accounts.push(acc);
   return { acc, isNew: true };
 }
@@ -827,7 +861,7 @@ async function uploadKeyFor(accountId, keyPath, title) {
   if (!up.ok) return { uploaded: false, msg: up.msg, pub, keyPath };
   // 实测一次：确认网站已经认这把钥匙
   const id = await sshIdentify(keyPath, host);
-  const login = id.login || acc.username;
+  const login = id.login || loginOf(acc);
   await withConf(cf => {
     const fields = { host, username: login, auth: 'ssh', sshKey: keyPath, ssh443: !!id.via443 };
     unignore(cf, fields);
@@ -904,7 +938,7 @@ const api = {
     await withConf(c2 => {
       c2.history.push({ time: Date.now(), path: p, remote: info.remote,
         oldUrl: info.secretInUrl ? maskUrl(oldUrl) : oldUrl, newUrl: plan.url == null ? oldUrl : plan.url,
-        oldSsh: info.sshCommand, newSsh: plan.ssh, account: acc ? `${acc.username} @ ${acc.host}` : '不指定' });
+        oldSsh: info.sshCommand, newSsh: plan.ssh, account: acc ? `${loginOf(acc)} @ ${acc.host}` : '不指定' });
       c2.history = c2.history.slice(-300);
       delete c2.tests[p];
     });
@@ -974,7 +1008,9 @@ const api = {
         if (!PROVIDERS[normHost(a.host)]) return null;
         throw e;
       });
-      if (i && i.login.toLowerCase() !== a.username.toLowerCase()) throw new Error(`这个 token 属于 ${i.login}，不是 ${a.username}。请用“添加账号”单独添加`);
+      // 占位用户名（x-access-token 等）还没验证出真实账号时，不知道该属于谁，不拦
+      const want = loginOf(a);
+      if (i && !PLACEHOLDER_USER.test(want) && i.login.toLowerCase() !== want.toLowerCase()) throw new Error(`这个 token 属于 ${i.login}，不是 ${want}。请用“添加账号”单独添加`);
       await credStore(a.host, a.username, String(token).trim());
       if (i) verify = verifyFromInspect(i);
     }
@@ -982,7 +1018,7 @@ const api = {
       const x = findAcc(c2, id);
       x.label = String(label || '').trim();
       x.owners = String(owners || '').split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
-      if (!x.owners.length) x.owners = [x.username];
+      if (!x.owners.length) x.owners = [loginOf(x)];
       if (x.auth === 'ssh') x.ssh443 = !!ssh443;
       if (verify) x.verify = verify;
     });
@@ -1024,7 +1060,7 @@ const api = {
     if (fs.existsSync(keyPath) || fs.existsSync(keyPath + '.pub')) throw new Error(`~/.ssh 里已经有 ${name} 了，换个文件名`);
     fs.mkdirSync(SSH_DIR, { recursive: true, mode: 0o700 });
     const acc = accountId ? findAcc(loadConf(), accountId) : null;
-    const comment = `${acc ? acc.username.replace(/[^\x21-\x7e]/g, '') + '@' : ''}${host} git-zhanghao ${os.hostname().replace(/\.local$/, '').replace(/[^\x21-\x7e]/g, '')}`;
+    const comment = `${acc ? loginOf(acc).replace(/[^\x21-\x7e]/g, '') + '@' : ''}${host} git-zhanghao ${os.hostname().replace(/\.local$/, '').replace(/[^\x21-\x7e]/g, '')}`;
     const g = await run('ssh-keygen', ['-q', '-t', 'ed25519', '-C', comment, '-f', keyPath, '-N', ''], { timeout: 20000 });
     if (g.code !== 0 || !fs.existsSync(keyPath)) throw new Error('生成密钥失败：' + (g.stderr || g.stdout).trim());
     await withConf(c => {
@@ -1042,10 +1078,23 @@ const api = {
     return Object.assign(r, { state: await state() });
   },
 
-  // 把账号能访问的仓库拉到本地，并加进项目列表（已经按这个账号配好）
-  async cloneRepo({ accountId, repo, parent, name }) {
-    const acc = findAcc(loadConf(), accountId);
-    if (!acc) throw new Error('账号不存在');
+  // 拉取对话框里边填边解析：认出站点和仓库，推荐一个账号
+  parseRepoUrl({ url }) {
+    const u = repoFromUrl(url);
+    const a = annotate(Object.assign({ sshKey: '' }, u), loadConf().accounts);
+    return { host: u.nhost, repo: u.rpath, name: u.repoName, proto: u.proto, suggestId: a.boundId || a.suggestId };
+  },
+
+  // 把仓库拉到本地，并加进项目列表（已经按选的账号配好）。
+  // 从账号的仓库列表点进来时给 repo（所有者/仓库名）；在项目页填地址时给 url，这时可以不选账号（只能拉公开仓库）
+  async cloneRepo({ accountId, repo, url, parent, name }) {
+    const acc = accountId ? findAcc(loadConf(), accountId) : null;
+    if (accountId && !acc) throw new Error('账号不存在');
+    const u = url ? repoFromUrl(url) : null;
+    if (u) {
+      repo = u.rpath;
+      if (acc && normHost(acc.host) !== u.nhost) throw new Error(`这个账号是 ${acc.host} 的，地址是 ${u.nhost} 的，对不上`);
+    } else if (!acc) throw new Error('请选择账号');
     repo = String(repo || '').replace(/^\/+|\.git$/g, '');
     if (!/^[^/\s]+\/[^\s]+$/.test(repo)) throw new Error('仓库名应该是“所有者/仓库名”的形式');
     name = String(name || '').trim();
@@ -1053,21 +1102,25 @@ const api = {
     if (!parent || !fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) throw new Error('保存位置不存在：' + parent);
     const dest = path.join(parent, name);
     if (fs.existsSync(dest) && fs.readdirSync(dest).length) throw new Error('目标文件夹已经存在而且不是空的：' + dest);
-    const host = normHost(acc.host);
-    const plan = planBind({ proto: 'https', host, rpath: repo, viaProxy: false, owner: repo.split('/')[0] }, acc);
+    const plan = acc ? planBind({ proto: 'https', host: normHost(acc.host), rpath: repo, viaProxy: false, owner: repo.split('/')[0] }, acc)
+      : { url: u.plainUrl, ssh: '' };
+    const proto = acc ? (acc.auth === 'ssh' ? 'ssh' : 'https') : u.proto;
     const args = [], extra = {}, clone = ['clone', '--progress'];
-    if (acc.auth === 'token') {
+    if (acc && acc.auth === 'token') {
       // 和“测试”一样只读地交出 token：失败时 git 不会把它从密码库删掉
       const c = await credGet(acc.host, acc.username);
       if (!c) throw new Error('系统密码库里没有这个账号的 token');
       args.push('-c', 'credential.helper=', '-c', 'credential.helper=' + READONLY_HELPER);
       Object.assign(extra, { GZ_TEST_USER: acc.username, GZ_TEST_PASS: c.password });
-    } else {
+    } else if (acc) {
       clone.push('--config', 'core.sshCommand=' + plan.ssh);
+    } else if (proto === 'https') {
+      args.push('-c', 'credential.helper=');  // 不指定账号：不碰系统密码库（认证失败时 git 会把里面的凭据删掉）
     }
     const r = await git(args.concat(clone, [plan.url, dest]), { cwd: parent, timeout: 30 * 60 * 1000, env: extra });
     if (r.code !== 0) {
-      const [, msg] = classify(r.code, r.stderr, acc.auth === 'ssh' ? 'ssh' : 'https');
+      let [kind, msg] = classify(r.code, r.stderr, proto);
+      if (!acc && kind === 'auth' && proto === 'https') msg = '这个仓库需要登录（或者地址不对）：请选一个能访问它的账号再拉取';
       const last = scrub(r.stderr).trim().split(/\r?\n/).filter(l => l.trim() && !/^(Cloning|remote: (Counting|Compressing|Enumerating|Total))/.test(l)).slice(-2).join('\n');
       throw new Error('拉取失败：' + msg + (last ? '\n' + last : ''));
     }
@@ -1076,7 +1129,7 @@ const api = {
       c.repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
       c.cloneDir = parent;
       c.history.push({ time: Date.now(), path: dest, remote: 'origin', oldUrl: '（新拉取）', newUrl: plan.url, oldSsh: '', newSsh: plan.ssh,
-        account: `${acc.username} @ ${acc.host}`, kind: 'clone' });
+        account: acc ? `${loginOf(acc)} @ ${acc.host}` : '不指定', kind: 'clone' });
     });
     return { path: dest, state: await state() };
   },
@@ -1125,8 +1178,13 @@ const api = {
     const a = findAcc(loadConf(), id);
     if (!a) return state();
     if (a.auth === 'token') {
-      await credErase(a.host, a.username);
-      if (await credGet(a.host, a.username)) throw new Error('没能从系统密码库删掉这条凭据，请在“钥匙串访问”里搜索 ' + a.host + ' 手动删除');
+      // Windows 的 GCM 可能给同一个账号存了好几条（目标名带 / 不带用户名），一次只删一条
+      let left = true;
+      for (let i = 0; i < 5 && left; i++) {
+        await credErase(a.host, a.username);
+        left = !!(await credGet(a.host, a.username));
+      }
+      if (left) throw new Error(`没能从系统密码库删掉这条凭据，请在${IS_WIN ? '“凭据管理器 → Windows 凭据”' : '“钥匙串访问”'}里搜索 ${a.host} 手动删除`);
       await withConf(c => { c.accounts = c.accounts.filter(x => x.id !== id); });
     } else {
       await trashKey(a.sshKey);
@@ -1149,7 +1207,7 @@ const api = {
       const x = findAcc(c, id);
       if (!x) return;
       x.verify = v;
-      if (v.ok && v.repos) x.owners = [...new Set((x.owners || []).concat(v.repos.map(r => r.name.split('/')[0])))];
+      if (v.ok && v.repos) x.owners = [...new Set((x.owners || []).concat(v.repos.map(r => r.name.split('/')[0])))].filter(o => !PLACEHOLDER_USER.test(o));
     });
     return state();
   },
@@ -1161,7 +1219,7 @@ const api = {
     const stored = await scanStoredCreds(repoHosts.concat(c.accounts.map(a => normHost(a.host))));
     // 可能的 GitHub 用户名：已登记的账号、密码库里存过的账号、项目的所有者
     const ghUsers = [...new Set([
-      ...c.accounts.filter(a => normHost(a.host) === 'github.com').map(a => a.username),
+      ...c.accounts.filter(a => normHost(a.host) === 'github.com').map(loginOf),
       ...stored.filter(s => normHost(s.host) === 'github.com').map(s => s.user),
       ...infos.filter(r => r.nhost === 'github.com' && r.owner).map(r => r.owner),
     ].filter(u => /^[A-Za-z0-9-]+$/.test(u)))];
