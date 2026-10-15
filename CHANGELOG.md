@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.1 — 2026-10-15
 
 ### New / 新功能
 - **JetBrains IDE check.** Detects JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, Android Studio…) whose Git settings don't have **Use credential helper** turned on. Those IDEs run Git with `-c credential.helper=`, which bypasses the system credential store, so pushing an HTTPS project pops up "Log In to GitHub" instead of using the saved token. The Projects page and *History & Settings → This computer* now say how to turn it on (Settings → Version Control → Git). IDE settings are only read, never changed.
