@@ -71,6 +71,9 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - Connectivity checks hand credentials to Git read-only, so a failed check can't make Git erase your stored token.
 - Full change history with undo. Export/import account settings (without secrets) between machines.
 
+**English & 中文**
+- The UI follows your system language; switch between English and Simplified Chinese any time from the sidebar.
+
 ## Screenshots
 
 | Pick an account, see access at a glance | Accounts grouped by HTTPS / SSH |
@@ -81,7 +84,7 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 |---|---|
 | <img src="docs/screenshots/help.png" alt="Token vs SSH"> | <img src="docs/screenshots/records.png" alt="History"> |
 
-> Screenshots use made-up demo data. The UI is currently in Simplified Chinese — an English UI is on the roadmap.
+> Screenshots use made-up demo data. The app speaks English and Simplified Chinese — it follows your system language, and you can switch any time in the bottom-left corner.
 
 ## Download
 
@@ -152,7 +155,7 @@ Project layout: `src/core.js` holds all logic (Git, credential store, token dete
 
 ## Roadmap
 
-- [ ] English UI (i18n)
+- [x] English UI (i18n) — since v1.4.0
 - [ ] Linux build
 - [ ] Code signing / notarization
 - [ ] Auto update

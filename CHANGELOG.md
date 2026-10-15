@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0 — 2026-10-15
+
+### New / 新功能
+- **English UI.** The whole app — pages, dialogs, status messages and system dialogs — is available in English and Simplified Chinese. It follows your system language; switch any time from the sidebar or *History & Settings → Language*.
+  **英文界面**：页面、弹窗、状态提示和系统对话框都支持中英文，默认跟随系统语言，可在左下角或“记录与设置 → 语言”随时切换。
+- README screenshots in both languages. / README 截图提供中英文两套。
+
+### Builds / 安装包
+- macOS (Apple Silicon & Intel) builds are back alongside Windows. / 恢复 macOS（Apple 芯片与 Intel）安装包，与 Windows 版同时发布。
+
 ## 1.3.1 — 2026-10-15
 
 ### New

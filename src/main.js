@@ -4,6 +4,8 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell, net, session, clipboar
 const fs = require('fs');
 const path = require('path');
 const core = require('./core');
+const I18N = require('../renderer/i18n.js');  // 和界面共用一份词典：系统对话框标题跟着界面语言
+const T = s => I18N.t(s);
 
 // 开发测试用：指定单独的配置目录，不碰正在用的那份
 if (process.env.GZ_USER_DATA) app.setPath('userData', process.env.GZ_USER_DATA);
@@ -42,8 +44,12 @@ function createWindow() {
 
 // 只在主进程里才能做的事（系统对话框、打开文件夹）
 const mainOnly = {
+  setLang({ lang }) {
+    I18N.setLang(lang);
+    return true;
+  },
   async pickFolders() {
-    const r = await dialog.showOpenDialog(win, { title: '选择项目文件夹', properties: ['openDirectory', 'multiSelections'] });
+    const r = await dialog.showOpenDialog(win, { title: T('选择项目文件夹'), properties: ['openDirectory', 'multiSelections'] });
     if (r.canceled || !r.filePaths.length) return null;
     return core.api.addRepos({ paths: r.filePaths });
   },
@@ -62,13 +68,13 @@ const mainOnly = {
     return true;
   },
   async exportFile() {
-    const r = await dialog.showSaveDialog(win, { title: '导出账号配置', defaultPath: 'git-账号配置.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+    const r = await dialog.showSaveDialog(win, { title: T('导出账号配置'), defaultPath: I18N.getLang() === 'en' ? 'git-accounts.json' : 'git-账号配置.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (r.canceled || !r.filePath) return null;
     fs.writeFileSync(r.filePath, JSON.stringify(core.api.exportData(), null, 2), 'utf8');
     return r.filePath;
   },
   async importFile() {
-    const r = await dialog.showOpenDialog(win, { title: '导入账号配置', properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
+    const r = await dialog.showOpenDialog(win, { title: T('导入账号配置'), properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (r.canceled || !r.filePaths.length) return null;
     const data = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8'));
     return core.api.importData({ data });
@@ -79,7 +85,7 @@ const mainOnly = {
     return true;
   },
   async pickDir({ defaultPath }) {
-    const r = await dialog.showOpenDialog(win, { title: '选择保存位置', defaultPath: defaultPath || undefined, properties: ['openDirectory', 'createDirectory'] });
+    const r = await dialog.showOpenDialog(win, { title: T('选择保存位置'), defaultPath: defaultPath || undefined, properties: ['openDirectory', 'createDirectory'] });
     return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
   },
   // 在 Sourcetree 里打开项目
@@ -147,7 +153,7 @@ const mainOnly = {
     return true;
   },
   async pickKey() {
-    const r = await dialog.showOpenDialog(win, { title: '选择 SSH 私钥文件', properties: ['openFile', 'showHiddenFiles'],
+    const r = await dialog.showOpenDialog(win, { title: T('选择 SSH 私钥文件'), properties: ['openFile', 'showHiddenFiles'],
       defaultPath: path.join(require('os').homedir(), '.ssh') });
     return r.canceled ? null : r.filePaths[0];
   },

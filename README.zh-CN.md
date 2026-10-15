@@ -13,7 +13,7 @@
 
 [English](README.md) · 简体中文
 
-<img src="docs/screenshots/projects.png" width="880" alt="项目页">
+<img src="docs/screenshots/zh-CN/projects.png" width="880" alt="项目页">
 
 </div>
 
@@ -71,15 +71,18 @@
 - 检查连通性时以只读方式把凭据交给 Git，检查失败也不会让 Git 把你存的 token 删掉。
 - 完整的修改记录，随时撤销；账号配置可导出 / 导入（不含密钥），方便在多台电脑间同步。
 
+**中文 & English**
+- 界面默认跟随系统语言，随时可以在左下角切换中文 / English。
+
 ## 截图
 
 | 选账号时直接看到有没有权限 | 账号按 HTTPS / SSH 分组 |
 |---|---|
-| <img src="docs/screenshots/picker.png" alt="选账号"> | <img src="docs/screenshots/accounts.png" alt="账号"> |
+| <img src="docs/screenshots/zh-CN/picker.png" alt="选账号"> | <img src="docs/screenshots/zh-CN/accounts.png" alt="账号"> |
 
 | 应用内解释 token 和 SSH 的区别 | 修改记录，可撤销 |
 |---|---|
-| <img src="docs/screenshots/help.png" alt="token 与 SSH"> | <img src="docs/screenshots/records.png" alt="修改记录"> |
+| <img src="docs/screenshots/zh-CN/help.png" alt="token 与 SSH"> | <img src="docs/screenshots/zh-CN/records.png" alt="修改记录"> |
 
 > 截图使用的是虚构的演示数据。
 
@@ -150,7 +153,7 @@ npm install --registry=https://registry.npmmirror.com
 
 ## 路线图
 
-- [ ] 英文界面（多语言）
+- [x] 英文界面（多语言）—— v1.4.0 起支持
 - [ ] Linux 版本
 - [ ] 代码签名 / 苹果公证
 - [ ] 自动更新

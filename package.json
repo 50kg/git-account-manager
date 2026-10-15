@@ -1,7 +1,7 @@
 {
   "name": "git-account-manager",
   "productName": "Git账号管家",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Manage which Git account each project uses — tokens & SSH keys in one place. 集中管理每个 Git 项目用哪个账号拉取 / 推送。",
   "main": "src/main.js",
   "author": "50kg",
