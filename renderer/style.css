@@ -96,6 +96,14 @@ details ul { margin: 6px 0 0; padding-left: 18px; font-family: var(--mono); font
 
 .note { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; color: var(--muted); font-size: 13px; }
 .note b { color: var(--text); }
+.note.warn { border-left-color: var(--warn); }
+.update-pill { align-self: flex-start; border: 0; border-radius: 999px; padding: 4px 10px; background: var(--accent-soft); color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.update-pill:hover { filter: brightness(.95); }
+.release-notes { max-height: 300px; overflow: auto; white-space: pre-wrap; background: var(--info-soft); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.6; user-select: text; }
+.release-notes code { font-family: var(--mono); font-size: 12px; }
+.note .btn { margin-left: 6px; }
+.modal ul { margin: 8px 0; padding-left: 20px; }
+.modal li { margin: 4px 0; }
 .muted { color: var(--muted); }
 .empty { padding: 30px; text-align: center; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; }

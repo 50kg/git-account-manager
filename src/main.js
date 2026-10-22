@@ -148,6 +148,12 @@ const mainOnly = {
     }
     return out;
   },
+  // 检查更新：用浏览器打开发布页 / 下载安装包（只放行本项目在 GitHub 上的地址）
+  openRelease({ url }) {
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\//.test(String(url || ''))) throw new Error('只能打开 GitHub 发布页的地址');
+    shell.openExternal(url);
+    return true;
+  },
   copyText({ text }) {
     clipboard.writeText(String(text || ''));
     return true;

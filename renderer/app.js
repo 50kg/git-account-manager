@@ -156,6 +156,7 @@ async function load() {
   if (!synced) {
     synced = true;
     call('appIcons').then(x => { ICONS = x || {}; render(); }).catch(() => {});
+    checkUpdate(false);
     syncLocal(true).then(() => {
       const stale = S.repos.filter(r => r.remote && (!r.test || Date.now() - r.test.time > 3600e3)).map(r => r.path);
       if (stale.length) testMany(stale);
@@ -171,7 +172,7 @@ function render() {
   $('#n-repos').innerHTML = (att ? `<i class="nav-badge" title="${esc(t('{n} 个项目需要处理', { n: att }))}">${att}</i>` : '') + (S.repos.length || '');
   $('#n-accounts').textContent = S.accounts.length || '';
   $('#sys').textContent = S.sys.platform + (S.sys.gitMissing ? ' · ' + t('没找到 git') : '');
-  renderRepos(); renderAccounts(); renderRecords();
+  renderRepos(); renderAccounts(); renderRecords(); renderUpdatePill();
 }
 
 function switchTab(x) {
@@ -352,6 +353,41 @@ function ideNote() {
     { ides: esc(bad.map(i => i.name).join(sep())), store: esc(storeName()) }), ideFixHtml()].join(isEn() ? ' ' : '')}</div>`;
 }
 
+// gh / glab 的 setup-git 接管了某个站点的 git 认证：git 只拿得到它当前登录的那一个账号
+const TOOL_NAMES = { gh: 'GitHub CLI（gh）', glab: 'GitLab CLI（glab）' };
+const toolName = x => t(TOOL_NAMES[x] || x);
+const helperOf = host => ((S.helpers || {}).hosts || {})[normHost(host)] || null;
+const gatedHosts = () => Object.entries((S.helpers || {}).hosts || {}).filter(([, h]) => h.status === 'gate').map(([host, h]) => Object.assign({ host }, h));
+const ghAccounts = host => (S.gh && S.gh.installed ? S.gh.accounts || [] : []).filter(x => !host || x.host === normHost(host));
+const ghActive = host => ghAccounts(host).find(x => x.active) || null;
+const ghEnv = x => /_TOKEN$/.test(x.source || '');
+function blockedBy(a) {
+  const h = a.auth === 'token' ? helperOf(a.host) : null;
+  if (!h || h.status !== 'gate') return null;
+  const act = h.tool === 'gh' ? ghActive(a.host) : null;
+  return act && act.login.toLowerCase() === a.username.toLowerCase() ? null : h;
+}
+
+// onlyRepos：项目页只在这个站点有 HTTPS 项目时才提示
+function helperNote(onlyRepos) {
+  const notes = gatedHosts().filter(h => !onlyRepos || S.repos.some(r => r.proto === 'https' && r.nhost === h.host)).map(h => {
+    const act = h.tool === 'gh' ? ghActive(h.host) : null;
+    const fix = h.fixable ? `<button class="btn sm primary" data-act="release" data-host="${esc(h.host)}">${esc(t('交还给系统密码库…'))}</button>`
+      : `<div style="margin-top:6px">${esc(h.scope === 'system' ? t('这几行写在系统级 git 配置（{file}）里，要用管理员权限手动删除。', { file: h.file })
+        : h.scope !== 'global' ? t('这几行写在 {file} 里，请手动删除。', { file: h.file }) : t('本机没有可以接手的系统密码库（credential.helper），需要先配置一个。'))}</div>`;
+    return `<div class="note warn"><b>${esc(t('{site} 的 git 认证被 {tool}接管了', { site: hostName(h.host), tool: toolName(h.tool) }))}</b>${isEn() ? ': ' : '：'}${esc(act
+      ? t('只有 {tool} 当前登录的 {login} 能推送和拉取，其它账号都会失败；在这里添加的 token，git 也用不上。', { tool: h.tool, login: act.login })
+      : t('只有 {tool} 当前登录的账号能推送和拉取，其它账号都会失败；在这里添加的 token，git 也用不上。', { tool: h.tool }))} ${fix}</div>`;
+  });
+  if (!onlyRepos) {
+    const used = new Set(S.accounts.filter(a => a.auth === 'token').map(a => normHost(a.host)));
+    const cache = Object.entries((S.helpers || {}).hosts || {}).filter(([host, h]) => h.status === 'cache' && used.has(host)).map(([host]) => hostName(host));
+    if (cache.length) notes.push(`<div class="note warn">${esc(t('{sites} 的 token 只临时记在内存里（credential.helper=cache），默认 15 分钟后就忘了。建议改用系统密码库。', { sites: cache.join(sep()) }))}</div>`);
+    if (S.helpers && S.helpers.base === 'none') notes.push(`<div class="note warn">${esc(t('本机没有配置凭据存储（credential.helper），token 存不住。'))}</div>`);
+  }
+  return notes.join('');
+}
+
 function renderRepos() {
   const el = $('#tab-repos');
   const repos = S.repos;
@@ -371,7 +407,7 @@ function renderRepos() {
   list.forEach(r => { (groups[groupOf(r)] = groups[groupOf(r)] || []).push(r); });
   const rank = g => { const i = Object.keys(HOST_NAMES).indexOf(g); return i >= 0 ? i : g.includes('.') ? 50 : 99; };
   const order = Object.keys(groups).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  el.innerHTML = head + ideNote() + `
+  el.innerHTML = head + helperNote(true) + ideNote() + `
     <div class="stats">
       ${[['all', repos.length, t('全部项目'), ''], ['attention', repos.filter(needsAttention).length, t('需要处理'), 'warn'],
         ['behind', repos.filter(FILTERS.behind).length, t('远程有更新'), 'acc'], ['dirty', repos.filter(FILTERS.dirty).length, t('有本地改动'), ''],
@@ -553,9 +589,13 @@ function accountRow(a) {
     : (a.hasToken ? `<button class="chip ok chip-btn" data-act="pubkey" data-id="${a.id}" title="${esc(a.sshKey)}">${esc(t('密钥 {file} · 查看公钥', { file: a.sshKey.split(/[\\/]/).pop() }))}</button>` : chip('bad', t('找不到密钥文件')));
   const state = !v ? `<span class="xstate muted">${esc(t('未验证'))}</span>`
     : `<span class="xstate ${v.info ? '' : v.ok ? 'ok' : 'bad'}" title="${esc(tr(v.msg))}">${esc(v.info ? 'ℹ︎ ' + t('见详情') : v.ok ? '✓ ' + t('正常') : '✕ ' + t('有问题'))}</span>`;
+  const blocked = blockedBy(a);
+  const inGh = a.auth === 'token' ? ghAccounts(a.host).find(x => x.login.toLowerCase() === loginOf(a).toLowerCase()) : null;
   const head = `<span class="xsite lg">${siteIcon(a.host)}</span>
     <span class="xmain"><b class="selectable">${esc(loginOf(a))}</b>${a.label ? `<span class="chip">${esc(a.label)}</span>` : ''}
       <span class="muted">${esc(hostName(a.host))}${placeholderOf(a) ? ' · ' + storedAs(a) : ''}${a.auto ? ' · ' + esc(t('本机自动识别')) : ''}</span></span>
+    ${blocked ? chip('warn', t('被 {tool} 挡住', { tool: blocked.tool }), t('{tool} 接管了这个站点的 git 认证，git 只能用它当前登录的账号，用不上这个 token', { tool: blocked.tool })) : ''}
+    ${inGh && inGh.active ? chip('acc', t('gh 当前'), t('gh 命令（gh pr、gh api 等）现在用这个账号')) : ''}
     <span class="mini-badge t-${typeOf(a)}">${esc(typeLabel(a))}</span>
     <span class="xmeta">${esc(used ? t('{n} 个项目在用', { n: used }) : t('没有项目在用'))}</span>
     ${state}`;
@@ -579,6 +619,8 @@ function accountRow(a) {
     <div class="acts body-acts">
       <button class="btn sm" data-act="verify" data-id="${a.id}">${esc(t('重新验证'))}</button>
       <button class="btn sm" data-act="editAcc" data-id="${a.id}">${esc(t('编辑'))}</button>
+      ${ghLoginable(a) ? (inGh ? (inGh.active ? '' : `<button class="btn sm" data-act="ghSwitch" data-host="${esc(inGh.host)}" data-login="${esc(inGh.login)}">${esc(t('在 gh 里设为当前'))}</button>`)
+        : `<button class="btn sm" data-act="ghLogin" data-id="${a.id}" title="${esc(t('让 gh 命令（gh pr、gh api 等）也能用这个账号'))}">${esc(t('登录到 gh…'))}</button>`) : ''}
       <span class="spacer"></span>
       <button class="btn sm danger" data-act="delAcc" data-id="${a.id}">${esc(t('删除'))}</button>
     </div>`;
@@ -643,6 +685,109 @@ function localKeysHtml() {
   </div>`;
 }
 
+// ================================================================ GitHub CLI（gh）：gh 命令自己登录的账号，和 git 用的账号是两回事
+
+const ghLoginable = a => !!(S.gh && S.gh.installed && !S.gh.envToken && a.auth === 'token' && normHost(a.host) === 'github.com' && a.hasToken && a.secretKind === 'token');
+const ghGated = host => { const h = helperOf(host); return !!(h && h.status === 'gate' && h.tool === 'gh'); };
+
+function ghCardHtml() {
+  const g = S.gh;
+  if (!g || !g.installed) return '';
+  const list = g.accounts || [];
+  const inTool = x => S.accounts.some(a => a.auth === 'token' && normHost(a.host) === x.host && loginOf(a).toLowerCase() === x.login.toLowerCase());
+  const btn = (act, x, text, cls) => `<button class="btn sm ${cls || ''}" data-act="${act}" data-host="${esc(x.host)}" data-login="${esc(x.login)}">${esc(text)}</button>`;
+  const rows = list.map(x => `<div class="found"><span class="xsite">${siteIcon(x.host)}</span>
+      <div class="grow"><span class="t selectable">${esc(x.login)}</span> <span class="muted">${esc(hostName(x.host))}</span>
+        ${x.active ? chip('acc', t('当前账号')) : ''} ${x.ok ? chip('ok', t('token 有效')) : chip(/连不上/.test(x.error) ? 'warn' : 'bad', tr(x.error))}
+        ${ghEnv(x) ? chip('', t('来自环境变量 {name}', { name: x.source })) : ''}</div>
+      ${!x.active && !g.envToken ? btn('ghSwitch', x, t('设为当前')) : ''}
+      ${!inTool(x) && !ghEnv(x) ? btn('ghImport', x, t('导入到工具'), 'primary') : ''}
+      ${!ghEnv(x) ? btn('ghLogout', x, t('登出'), 'danger') : ''}</div>`).join('');
+  return `<div class="card">
+    <h2>${esc(toolName('gh'))} <span class="muted" style="font-weight:normal">${esc(g.version)}</span>
+      <button class="btn sm" data-act="ghRefresh" style="float:right">${esc(t('刷新'))}</button></h2>
+    <p>${esc(t('gh 命令（gh pr、gh api 等）自己登录的账号，和 git 推送拉取用的账号是两回事。这里的按钮直接调用 gh 自己的命令，只在你点的时候才会改动 gh。'))}</p>
+    ${g.envToken ? `<div class="note warn">${esc(t('gh 正在用环境变量 {name} 里的 token：切换、登出都不起作用，要先去掉这个环境变量。', { name: g.envToken }))}</div>` : ''}
+    ${rows || `<p class="muted">${esc(t('gh 还没有登录任何账号。可以展开上面的 GitHub token 账号，点“登录到 gh”。'))}</p>`}
+  </div>`;
+}
+
+async function ghSwitch(host, login) {
+  if (ghGated(host)) {
+    const ok = await modal(t('切换 gh 账号'), `<p>${t('把 gh 在 {site} 的当前账号切换为 <b>{login}</b>。', { site: esc(hostName(host)), login: esc(login) })}</p>
+      <p class="chip warn" style="white-space:normal;display:block;padding:6px 10px">${esc(t('gh 正在接管 git：切换后，所有 {site} 的 HTTPS 项目推送、拉取也会改用 {login}。交还给系统密码库后就不会这样了。', { site: hostName(host), login }))}</p>`);
+    if (!ok) return;
+  }
+  try { setState(await call('ghSwitch', { host, login })); toast(t('gh 当前账号已切换为 {login}', { login })); } catch (e) { toastErr(e); }
+}
+
+async function ghLogout(host, login) {
+  const others = ghAccounts(host).filter(x => x.login !== login);
+  const me = ghAccounts(host).find(x => x.login === login) || {};
+  const html = `<p>${t('从 gh 登出 <b>{login}</b>（{site}）：gh 会删除它为这个账号保存的 token。', { login: esc(login), site: esc(hostName(host)) })}</p>
+    ${me.active && others.length ? `<p>${esc(t('它是 gh 的当前账号，登出后 gh 会自动切到 {next}。', { next: others[0].login }))}</p>` : ''}
+    ${!others.length ? `<p>${esc(t('这是 gh 在这个站点唯一的账号，登出后 gh 命令要重新登录才能用。'))}</p>` : ''}
+    ${ghGated(host) ? `<p class="chip warn" style="white-space:normal;display:block;padding:6px 10px">${esc(t('注意：gh 正在接管 git，登出后 git 也拿不到这个账号的 token。'))}</p>`
+      : `<p class="muted">${esc(t('不影响 git，也不影响{store}里 git 用的 token。', { store: storeName() }))}</p>`}`;
+  const ok = await modal(t('从 gh 登出'), html, [{ text: t('取消'), value: null }, { text: t('登出'), danger: true, value: true }]);
+  if (!ok) return;
+  try { setState(await call('ghLogout', { host, login })); toast(t('已从 gh 登出 {login}', { login })); } catch (e) { toastErr(e); }
+}
+
+async function ghLoginDialog(id) {
+  const a = accById(id);
+  const act = ghActive(a.host);
+  const html = `<p>${t('把 <b>{login}</b> 登录到 GitHub CLI（gh）：', { login: esc(loginOf(a)) })}</p>
+    <ul>
+      <li>${esc(t('gh 会把它设为 {site} 的当前账号，之后 gh pr、gh api 等命令都用它', { site: hostName(a.host) }))}${act ? esc(t('（现在是 {login}）', { login: act.login })) : ''}</li>
+      ${ghGated(a.host) ? `<li><b>${esc(t('gh 正在接管 git：所有 HTTPS 项目的推送、拉取也会改用这个账号'))}</b></li>` : ''}
+      <li>${esc(t('token 通过标准输入交给 gh，存进 gh 自己的密码库条目；工具里的账号不受影响'))}</li>
+    </ul>
+    ${/^github_pat_/.test(a.tokenMask || '') ? `<p class="chip warn" style="white-space:normal;display:block;padding:6px 10px">${esc(t('这是细粒度 token，只授权了部分仓库和权限。gh 官方提醒：用它登录后，有些 gh 命令可能报看不懂的错。'))}</p>` : ''}`;
+  const ok = await modal(t('登录到 gh'), html, [{ text: t('取消'), value: null }, { text: t('登录到 gh'), primary: true, value: true }]);
+  if (!ok) return;
+  try { setState(await call('ghLogin', { id })); toast(t('已登录到 gh，{login} 现在是 gh 的当前账号', { login: loginOf(a) })); } catch (e) { toastErr(e); }
+}
+
+async function ghImport(host, login) {
+  try {
+    const r = await call('ghImport', { host, login });
+    setState(r.state);
+    toast(r.isNew ? t('已添加账号 {name}。', { name: r.account.username }) : t('已更新账号 {name}。', { name: r.account.username }));
+  } catch (e) { toastErr(e); }
+}
+
+// 一键交还：删掉 gh / glab 写进全局配置的那几行，让这个站点回到系统密码库
+async function releaseDialog(host) {
+  let p;
+  try { p = await call('releaseHelper', { host, dryRun: true }); } catch (e) { return toastErr(e); }
+  const STATE = { same: '{store}里已经有，而且是同一个，跳过', missing: '{store}里没有，会存进去',
+    differs: '{store}里存的是另一个 token：还能用就保留，失效了才换成 gh 里的', unknown: '读不到 gh 里的 token，跳过' };
+  const store = storeName();
+  const html = `
+    <p>${esc(t('会从 {file} 删掉下面这几行：', { file: p.file }))}</p>
+    <div class="diff">${p.lines.map(l => l.values.map(v => `<div class="old">− ${esc(l.key)} = ${esc(v)}</div>`).join('')).join('')}</div>
+    ${p.accounts.length ? `<p>${esc(t('先把 gh 里登录的账号存进{store}：', { store }))}</p>
+      <ul>${p.accounts.map(a => `<li><b>${esc(a.login)}</b> · ${esc(t(STATE[a.state], { store }))}</li>`).join('')}</ul>` : ''}
+    ${p.tool === 'glab' ? `<p>${esc(t('glab 里的 token 不会自动搬过来：git 要用 glab 登录的账号，请在这里粘贴它的 token 添加。'))}</p>` : ''}
+    <ul class="muted">
+      <li>${esc(t('之后 git 推送、拉取都从{store}取 token，按每个项目绑定的账号走', { store }))}</li>
+      ${p.tool === 'gh' ? `<li>${esc(t('gh 命令（gh pr、gh api 等）不受影响，还是用 gh 自己登录的账号'))}</li>
+        <li>${esc(t('以后用 gh auth switch 切换账号，不会再连带切换 git 的账号'))}</li>` : ''}
+      <li>${esc(t('改之前会先备份这个文件，在“记录与设置”里可以撤销'))}</li>
+    </ul>`;
+  const ok = await modal(t('交还给系统密码库'), html, [{ text: t('取消'), value: null }, { text: t('交还'), primary: true, value: true }],
+    back => back.querySelector('.modal').classList.add('wide'));
+  if (!ok) return;
+  try {
+    const r = await call('releaseHelper', { host });
+    setState(r.state);
+    if (r.still) toast(t('已删掉那几行，但 {site} 还是被接管：别的配置文件里还有，请到“记录与设置 → 本机信息”查看', { site: hostName(host) }), true);
+    else toast(t('已交还：{site} 的 git 认证回到{store}', { site: hostName(host), store }) + (r.moved.length ? t('，存入了 {n} 个账号的 token', { n: r.moved.length }) : ''));
+    syncLocal(true);
+  } catch (e) { toastErr(e); }
+}
+
 function renderAccounts() {
   const el = $('#tab-accounts');
   const tokenVal = ($('#tok') || {}).value || '';
@@ -652,6 +797,7 @@ function renderAccounts() {
       <button class="btn" data-act="sync" ${syncing ? 'disabled' : ''} title="${esc(t('重新读取{store}和 ~/.ssh 里的账号', { store: storeName() }))}">${esc(t('刷新'))}</button>
       <button class="btn primary" data-act="genKey">${esc(t('生成 SSH 密钥'))}</button>
       <button class="btn help-btn" data-act="help" title="${esc(t('token 和 SSH 有什么区别？'))}">?</button></div>
+    ${helperNote()}
     <div class="card">
       <h2>${esc(t('添加账号：粘贴 token 就行'))}</h2>
       <p class="muted" style="margin:-2px 0 8px">${esc(t('这里的账号和本机完全同步：在这里添加会写入本机，删除也会从本机删掉；在本机别处的增删，点“刷新”就会同步过来。'))}</p>
@@ -668,6 +814,7 @@ function renderAccounts() {
     </div>
     ${localKeysHtml()}
     ${S.accounts.length ? accountGroups() : `<div class="empty">${esc(t('还没有账号'))}</div>`}
+    ${ghCardHtml()}
   `;
   const tok = $('#tok');
   tok.addEventListener('keydown', e => { if (e.key === 'Enter') inspectToken(); });
@@ -689,13 +836,16 @@ async function inspectToken() {
     <div class="list">${info.repos.map(r => esc(r.name) + (r.push ? '' : esc(t('（只读）')))).join('<br>') || esc(t('（没有）'))}</div>
     ${mine.length ? `<div class="kv">${esc(t('你列表里有 {n} 个项目可以用这个账号：', { n: mine.length }))}${mine.map(r => esc(r.name)).join(sep())}</div>` : ''}
     <p class="muted">${esc(t('保存后会存进系统密码库（站点 {host}，用户名 {login}）。', { host: info.host, login: info.login }))}${exists ? `<b>${esc(t('会替换这个账号原来存的 token。'))}</b>` : ''}</p>`;
-  const ok = await modal(t('识别结果'), html, [{ text: t('取消'), value: null }, { text: exists ? t('更新 token') : t('保存账号'), primary: true, value: true }]);
+  const gate = blockedBy({ auth: 'token', host: info.host, username: info.login });
+  const gateHtml = gate ? `<p class="chip warn" style="white-space:normal;display:block;padding:6px 10px">${esc(t('{site} 的 git 认证被 {tool}接管了：token 照样能存进系统密码库，但 git 用不上它。', { site: hostName(info.host), tool: toolName(gate.tool) }))}${gate.fixable ? esc(t('保存后会接着问你要不要交还。')) : ''}</p>` : '';
+  const ok = await modal(t('识别结果'), html + gateHtml, [{ text: t('取消'), value: null }, { text: exists ? t('更新 token') : t('保存账号'), primary: true, value: true }]);
   if (!ok) return;
   try {
     const r = await call('addToken', { token, host: info.host });
     $('#tok').value = '';
     setState(r.state);
     toast((r.isNew ? t('已添加账号 {name}。', { name: r.account.username }) : t('已更新账号 {name}。', { name: r.account.username })) + (mine.length ? t('去“项目”页点“按建议绑定”即可。') : ''));
+    if (gate && gate.fixable) releaseDialog(info.host);
   } catch (e) { toastErr(e); }
 }
 
@@ -706,7 +856,9 @@ async function syncLocal(silent) {
   try {
     const r = await call('autoSync');
     setState(r.state);
-    if (r.removed) toast(t('有 {n} 个账号在本机已经不存在（在工具外面被删了），已从列表去掉', { n: r.removed }));
+    const lostKeys = r.removedKeys || 0, lostTokens = r.removed - lostKeys;
+    if (lostTokens) toast(t('有 {n} 个账号在本机密码库里已经没有 token 了（可能在别处删掉了，或者 token 失效后被 git 自动清掉），已从列表去掉', { n: lostTokens }));
+    if (lostKeys) toast(t('有 {n} 个 SSH 账号的密钥文件已经不在了，已从列表去掉', { n: lostKeys }));
     if (r.added.length) {
       toast(t('从本机找到 {n} 个新账号', { n: r.added.length }));
       for (const id of r.added) {
@@ -1021,6 +1173,15 @@ async function deleteLocalKey(keyPath) {
 
 // ================================================================ 记录与设置：一行一行，可展开折叠
 
+const HELPER_CHIP = {
+  ok: () => chip('ok', t('系统密码库')),
+  gate: h => chip('bad', t('被 {tool} 接管', { tool: h.tool })),
+  cache: () => chip('warn', t('只临时记住，15 分钟后忘掉')),
+  plain: () => chip('warn', t('明文保存在 ~/.git-credentials')),
+  none: () => chip('bad', t('没配置，token 存不住')),
+  other: () => chip('', t('不认识的助手：保存后会读回来核对')),
+};
+
 const openRows = new Set(['sync']);  // 默认展开的行
 const hostOfUrl = u => { const m = String(u || '').match(/^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|[^@/]+@)?([^/:]+)/); return m ? normHost(m[1]) : ''; };
 function dayLabel(x) {
@@ -1038,12 +1199,32 @@ function rowHtml(key, head, body) {
   </div>`;
 }
 
+// 一键交还 / 撤销交还：改的是全局 git 配置，不是某个项目
+function helperHistoryRow(h, i) {
+  const isUndo = h.account === '撤销';  // 主进程记录里的标记，不是界面文字
+  const head = `<span class="xic ${isUndo ? 'undo' : 'bind'}" title="${esc(isUndo ? t('撤销') : t('交还给系统密码库'))}">${isUndo ? '↺' : '⚙'}</span>
+    <span class="xmain"><b>${esc(t('{site} 的 git 认证', { site: hostName(h.host) }))}</b><span class="xarrow">→</span><span class="xsite">${siteIcon(h.host)}</span>
+      <span>${esc(isUndo ? t('恢复由 {tool} 接管', { tool: h.tool }) : t('交还给系统密码库'))}</span></span>
+    <span class="xmeta">${clock(h.time)}</span>`;
+  const body = `
+    <div class="kvgrid">
+      <span>${esc(t('文件'))}</span><b class="selectable">${esc(h.file)}</b>
+      <span>${esc(t('时间'))}</span><b>${fmtTime(h.time)}</b>
+      ${h.backup ? `<span>${esc(t('备份'))}</span><b class="selectable">${esc(h.backup)}</b>` : ''}
+      ${h.moved && h.moved.length ? `<span>${esc(t('存入密码库'))}</span><b>${esc(h.moved.join(sep()))}</b>` : ''}
+    </div>
+    <div class="diff">${h.lines.map(l => l.values.map(v => `<div class="${isUndo ? 'new' : 'old'}">${isUndo ? '+' : '−'} ${esc(l.key)} = ${esc(v)}</div>`).join('')).join('')}</div>
+    ${isUndo ? '' : `<div class="acts" style="margin-top:10px"><button class="btn sm" data-act="undo" data-i="${i}">${esc(t('撤销这次改动'))}</button></div>`}`;
+  return rowHtml('h' + h.time + ':' + h.file, head, body);
+}
+
 function historyRows() {
   if (!S.history.length) return `<div class="xempty">${esc(t('还没有修改过。在项目页给项目换账号后，这里会记下每一次改动，随时可以撤销。'))}</div>`;
   let out = '', lastDay = '';
   S.history.forEach((h, i) => {
     const day = dayLabel(h.time);
     if (day !== lastDay) { out += `<div class="xday">${esc(day)}</div>`; lastDay = day; }
+    if (h.kind === 'helper') { out += helperHistoryRow(h, i); return; }
     const name = h.path.split(/[\\/]/).pop();
     // 主进程记录里的 '撤销' / '不指定' 是数据，不是界面文字
     const isUndo = h.account === '撤销', isClone = h.kind === 'clone';
@@ -1074,21 +1255,27 @@ function renderRecords() {
   const s = S.sys;
   const store = storeName();
   const ides = s.ides || [], badIdes = idesNoHelper();
+  const gated = gatedHosts();
+  // 和通用设置不一样的站点才单独列出来
+  const siteHelpers = Object.entries((S.helpers || {}).hosts || {}).filter(([, h]) => h.status !== 'ok' || h.helpers.join('\n') !== S.helpers.store.join('\n'));
   const settings = [
     rowHtml('lang',
       `<span class="xic set">文A</span><span class="xmain"><b>${esc(t('语言'))}</b><span class="muted">${isEn() ? 'English' : '中文'}</span></span>`,
       `<div class="seg" id="lang-seg">${[['zh', '中文'], ['en', 'English']].map(([k, label]) => `<button class="${window.I18N.getLang() === k ? 'on' : ''}" data-act="lang" data-l="${k}">${label}</button>`).join('')}</div>
        <p class="muted" style="margin:8px 0 0">${esc(t('默认跟随系统语言。也可以在左下角切换。'))}</p>`),
+    versionRow(),
     rowHtml('sync',
       `<span class="xic set">⇅</span><span class="xmain"><b>${esc(t('Mac / Windows 同步账号'))}</b><span class="muted">${esc(t('导出 / 导入账号配置，不含 token'))}</span></span>`,
       `<p class="muted" style="margin-top:0">${t('导出的文件只有账号信息（网站、用户名、备注、密钥文件名），<b>不含 token 和密钥</b>。在另一台电脑导入后，到账号页把 token 粘贴一次即可；SSH 密钥需要自己拷过去，或在那台电脑上重新生成。')}</p>
        <div class="acts"><button class="btn" data-act="export">${esc(t('导出账号配置…'))}</button><button class="btn" data-act="import">${esc(t('导入账号配置…'))}</button></div>`),
     rowHtml('sys',
-      `<span class="xic set">ⓘ</span><span class="xmain"><b>${esc(t('本机信息'))}</b><span class="muted">${esc(s.platform)} · ${esc((s.gitVersion || t('没找到 git')).replace(/^git version /, 'Git '))} · ${esc(s.helper ? store : t('没配置凭据存储'))}${badIdes.length ? ' · ' + esc(t('{n} 个 IDE 没开凭据助手', { n: badIdes.length })) : ''}</span></span>${s.helper && !s.gitMissing && !badIdes.length ? '' : chip('bad', t('要处理'))}`,
+      `<span class="xic set">ⓘ</span><span class="xmain"><b>${esc(t('本机信息'))}</b><span class="muted">${esc(s.platform)} · ${esc((s.gitVersion || t('没找到 git')).replace(/^git version /, 'Git '))} · ${esc(s.helper ? store : t('没配置凭据存储'))}${gated.length ? ' · ' + esc(t('{n} 个站点被接管', { n: gated.length })) : ''}${badIdes.length ? ' · ' + esc(t('{n} 个 IDE 没开凭据助手', { n: badIdes.length })) : ''}</span></span>${s.helper && !s.gitMissing && !badIdes.length && !gated.length ? '' : chip('bad', t('要处理'))}`,
       `<div class="kvgrid">
          <span>${esc(t('系统'))}</span><b>${esc(s.platform)}</b>
          <span>Git</span><b>${esc(s.gitVersion || t('没有找到 git，请先安装'))}</b>
          <span>${esc(t('凭据存储'))}</span><b>${esc(s.helper || t('未配置'))}${s.helper ? '' : ' ' + chip('bad', t('没配置 credential.helper，token 存不住'))}</b>
+         ${siteHelpers.map(([host, h]) => `<span>${esc(host)}</span><b>${esc(h.helpers.join(', ') || t('未配置'))} ${HELPER_CHIP[h.status](h)}</b>`).join('')}
+         ${S.gh && S.gh.installed ? `<span>GitHub CLI</span><b>gh ${esc(S.gh.version)}${ghActive('github.com') ? ' · ' + esc(t('当前账号 {login}', { login: ghActive('github.com').login })) : ''}</b>` : ''}
          <span>${esc(t('代理'))}</span><b>${esc(s.proxy || t('无'))}</b>
          ${ides.length ? `<span>JetBrains</span><b>${ides.map(i => `${esc(i.name)} ${i.helper
            ? chip('ok', t('已用凭据助手'))
@@ -1096,7 +1283,8 @@ function renderRecords() {
          <span>${esc(t('配置文件'))}</span><b class="selectable">${esc(s.confPath)}</b>
        </div>
        ${badIdes.length ? `<p class="muted">${[t('JetBrains IDE（IntelliJ IDEA / PyCharm / WebStorm 等）默认用 {cmd} 运行 git，绕过{store}，推送时会弹 “Log In to GitHub”。',
-         { cmd: '<span class="mono">git -c credential.helper=</span>', store: esc(store) }), ideFixHtml(), esc(t('本工具只读取 IDE 配置，不会修改。'))].join(isEn() ? ' ' : '')}</p>` : ''}`),
+         { cmd: '<span class="mono">git -c credential.helper=</span>', store: esc(store) }), ideFixHtml(), esc(t('本工具只读取 IDE 配置，不会修改。'))].join(isEn() ? ' ' : '')}</p>` : ''}
+       ${helperNote()}`),
     rowHtml('how',
       `<span class="xic set">?</span><span class="xmain"><b>${esc(t('工作原理'))}</b><span class="muted">${esc(t('为什么要给每个项目指定账号'))}</span></span>`,
       `<p style="margin-top:0">${t('{store}按 <b>“网站 + 用户名”</b> 保存 token。项目地址里如果没写用户名，同一网站的项目只能共用一份 token：拉一个项目时换了 token，就会把别的项目顶掉。', { store: esc(store) })}</p>
@@ -1110,9 +1298,90 @@ function renderRecords() {
     <div class="xlist">${settings}</div>`;
 }
 
+// ================================================================ 检查新版本：打开软件时查一次 GitHub 上最新的正式版
+
+let UPD = null;             // 上一次检查的结果；失败时是 { error, time }
+let checkingUpdate = false;
+const skippedVersion = () => { try { return localStorage.getItem('gz-skip-version') || ''; } catch (e) { return ''; } };
+
+function renderUpdatePill() {
+  const el = $('#update');
+  el.hidden = !(UPD && UPD.hasUpdate && UPD.latest !== skippedVersion());
+  el.textContent = el.hidden ? '' : '↑ ' + t('新版本 {v}', { v: UPD.latest });
+}
+
+async function checkUpdate(manual) {
+  if (checkingUpdate) return;
+  checkingUpdate = true;
+  if (S) renderRecords();
+  try {
+    UPD = await call('checkUpdate');
+    if (manual) { if (UPD.hasUpdate) showUpdate(); else toast(t('已经是最新版本（{v}）', { v: UPD.current })); }
+  } catch (e) {
+    UPD = { error: e.message, time: Date.now() };
+    if (manual) toastErr(e);
+  }
+  checkingUpdate = false;
+  renderUpdatePill();
+  if (S) renderRecords();
+}
+
+// 发布说明：只显示正文（下载表格和校验值在发布页上看），把 Markdown 的标题、粗体、代码简单转一下
+function notesHtml(md) {
+  return esc(String(md || '').split(/\n#+\s*(?:Download|下载)/i)[0].trim())
+    .replace(/^#{1,6}\s*(.+)$/gm, '<b>$1</b>')
+    .replace(/^- /gm, '• ')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+}
+
+async function showUpdate() {
+  const u = UPD;
+  if (!u || !u.hasUpdate) return;
+  const file = u.asset ? u.asset.name : '';
+  const how = !u.asset ? t('这个版本还没有适合这台电脑的安装包，请到发布页查看。')
+    : /\.dmg$/i.test(file) ? t('会用浏览器下载 {file}，打开后把应用拖进“应用程序”文件夹替换旧版，账号和设置都会保留。', { file })
+      : /portable/i.test(file) ? t('会用浏览器下载 {file}，下载后直接运行新的 exe（旧的可以删掉），账号和设置都会保留。', { file })
+        : t('会用浏览器下载 {file}，下载后运行它即可升级，账号和设置都会保留。', { file });
+  const date = u.publishedAt ? new Date(u.publishedAt).toLocaleDateString(LOCALE()) : '';
+  const html = `<p>${t('当前版本 {cur}，最新版本 <b>{latest}</b>（{date}）。', { cur: esc(u.current), latest: esc(u.latest), date: esc(date) })}</p>
+    ${u.notes ? `<div class="release-notes">${notesHtml(u.notes)}</div>` : ''}
+    <p class="muted">${esc(how)}</p>`;
+  const buttons = [{ text: t('跳过这个版本'), value: 'skip' }, { text: t('打开发布页'), value: 'page', primary: !u.asset }];
+  if (u.asset) buttons.push({ text: t('下载新版本'), primary: true, value: 'download' });
+  const act = await modal(t('有新版本 {v}', { v: u.latest }), html, buttons, back => back.querySelector('.modal').classList.add('wide'));
+  if (act === 'skip') {
+    try { localStorage.setItem('gz-skip-version', u.latest); } catch (e) { /* 存不了就下次再提示 */ }
+    renderUpdatePill();
+    toast(t('不再提示 {v}，可以在“记录与设置”里手动检查新版本', { v: u.latest }));
+  } else if (act === 'page' || act === 'download') {
+    call('openRelease', { url: act === 'download' ? u.asset.url : u.url }).catch(toastErr);
+  }
+}
+
+function versionRow() {
+  const v = S.sys.version;
+  const sum = checkingUpdate ? t('正在检查…') : !UPD ? '' : UPD.error ? t('检查失败') : UPD.hasUpdate ? '' : t('已是最新');
+  return rowHtml('ver',
+    `<span class="xic set">↻</span><span class="xmain"><b>${esc(t('版本'))}</b><span class="muted">${esc(v)}${sum ? ' · ' + esc(sum) : ''}</span></span>${UPD && UPD.hasUpdate ? chip('acc', t('新版本 {v}', { v: UPD.latest })) : ''}`,
+    `<div class="kvgrid">
+       <span>${esc(t('当前版本'))}</span><b>${esc(v)}</b>
+       <span>${esc(t('最新版本'))}</span><b>${esc(UPD && UPD.latest ? UPD.latest : UPD && UPD.error ? tr(UPD.error) : checkingUpdate ? t('正在检查…') : t('还没检查'))}</b>
+       ${UPD && UPD.time ? `<span>${esc(t('上次检查'))}</span><b>${fmtTime(UPD.time)}</b>` : ''}
+     </div>
+     <div class="acts" style="margin-top:10px">
+       <button class="btn" data-act="checkUpdate" ${checkingUpdate ? 'disabled' : ''}>${checkingUpdate ? `<span class="spin"></span> ${esc(t('正在检查…'))}` : esc(t('检查新版本'))}</button>
+       ${UPD && UPD.hasUpdate ? `<button class="btn primary" data-act="showUpdate">${esc(t('查看新版本'))}</button>` : ''}
+     </div>
+     <p class="muted" style="margin:8px 0 0">${esc(t('打开软件时会自动检查一次，只看 GitHub 上的正式版本。'))}</p>`);
+}
+
 async function undo(i) {
   const h = S.history[i];
-  const ok = await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的远程地址改回：', { path: esc(h.path) })}</p><div class="diff">${esc(h.oldUrl)}</div>`);
+  const ok = h.kind === 'helper'
+    ? await modal(t('撤销修改'), `<p>${t('把下面这几行加回 <b>{file}</b>，{site} 的 git 认证会重新由 {tool}接管：', { file: esc(h.file), site: esc(hostName(h.host)), tool: esc(toolName(h.tool)) })}</p>
+        <div class="diff">${h.lines.map(l => l.values.map(v => `<div class="new">+ ${esc(l.key)} = ${esc(v)}</div>`).join('')).join('')}</div>`)
+    : await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的远程地址改回：', { path: esc(h.path) })}</p><div class="diff">${esc(h.oldUrl)}</div>`);
   if (!ok) return;
   try { setState(await call('undo', { index: i })); toast(t('已撤销')); } catch (e) { toastErr(e); }
 }
@@ -1160,6 +1429,17 @@ const ACTIONS = {
   editAcc: d => editAccount(d.id),
   delAcc: d => deleteAccount(d.id),
   undo: d => undo(+d.i),
+  checkUpdate: () => checkUpdate(true),
+  showUpdate: () => showUpdate(),
+  release: d => releaseDialog(d.host),
+  ghSwitch: d => ghSwitch(d.host, d.login),
+  ghLogout: d => ghLogout(d.host, d.login),
+  ghImport: d => ghImport(d.host, d.login),
+  ghLogin: d => ghLoginDialog(d.id),
+  ghRefresh: async (d, el) => {
+    el.disabled = true; el.innerHTML = `<span class="spin"></span> ${esc(t('刷新'))}`;
+    try { setState(await call('ghRefresh')); } catch (e) { toastErr(e); renderAccounts(); }
+  },
   toggleRow: d => { openRows.has(d.key) ? openRows.delete(d.key) : openRows.add(d.key); render(); },
   openPath: d => call('openRepo', { path: d.path }).catch(() => toast(t('这个项目已经不在列表里了，没法打开'), true)),
   export: async () => { try { const p = await call('exportFile'); if (p) toast(t('已导出到 {path}', { path: p })); } catch (e) { toastErr(e); } },

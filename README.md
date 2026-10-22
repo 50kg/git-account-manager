@@ -65,11 +65,13 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - **Generate an SSH key** and register the public key on GitHub / Gitee / GitLab through the API — no copy-paste.
 - **Clone** any repository an account can access, straight into the project list, already bound to that account.
 - View token / password / public key on demand.
+- **GitHub CLI (gh)**: `gh auth setup-git` makes gh take over git sign-in for github.com (it only hands out the one signed-in account). The app points this out and can hand it back to the system credential store in one click (undoable). gh's own sign-ins can be viewed, switched, signed in, signed out and imported here too.
 
 **Safe by design**
 - Tokens live only in the system credential store. The app's own config never contains secrets.
 - Connectivity checks hand credentials to Git read-only, so a failed check can't make Git erase your stored token.
 - Full change history with undo. Export/import account settings (without secrets) between machines.
+- Tells you when a new version is out on GitHub, with a direct download for your computer.
 
 **English & 中文**
 - The UI follows your system language; switch between English and Simplified Chinese any time from the sidebar.

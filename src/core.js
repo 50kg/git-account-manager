@@ -163,19 +163,234 @@ function parseKv(text) {
 }
 
 async function credGet(host, user) {
-  const r = await git(['credential', 'fill'], { input: credInput(host, user), timeout: 90000 });
+  const r = await git((await credArgs(host)).concat(['credential', 'fill']), { input: credInput(host, user), timeout: 90000 });
   if (r.code !== 0) return null;
   const d = parseKv(r.stdout);
   return d.password ? { username: d.username || user, password: d.password } : null;
 }
 
+// 存完马上读回来核对：有的助手（gh、glab）保存时假装成功、其实什么都没存
 async function credStore(host, user, token) {
-  const r = await git(['credential', 'approve'], { input: credInput(host, user, token), timeout: 90000 });
+  const r = await git((await credArgs(host)).concat(['credential', 'approve']), { input: credInput(host, user, token), timeout: 90000 });
   if (r.code !== 0) throw new Error('写入系统密码库失败：' + scrub(r.stderr));
+  const back = await credGet(host, user);
+  if (back && back.password === token) return;
+  const info = await helperInfo(true);
+  const h = hostHelper(info, host);
+  if (h.status === 'none') throw new Error('本机没有配置凭据存储（credential.helper），token 存不住');
+  if (h.status === 'gate') throw new Error(`${h.tool} 接管了 ${normHost(host)} 的 git 认证，本机又没有系统密码库可以绕过，token 存不进去`);
+  throw new Error(`写入后读不回来：凭据助手（${h.helpers.join('、')}）没有真正保存这个 token`);
 }
 
 async function credErase(host, user) {
-  await git(['credential', 'reject'], { input: credInput(host, user), timeout: 90000 });
+  await git((await credArgs(host)).concat(['credential', 'reject']), { input: credInput(host, user), timeout: 90000 });
+}
+
+// ------------------------------------------------------------------ 凭据助手：git 实际把 token 交给谁
+// git 依次读 系统 → 全局 → 项目 配置里的 credential.helper 和 credential.<网址>.helper，遇到空值就清空前面的。
+// gh / glab 的 setup-git 会写成“先清空、再只用自己”：保存时假装成功、什么都不存，读取时只给它当前登录的那一个账号。
+// 这时工具自己读写 token 要绕开它们，直接用通用的系统密码库，界面上再提示用户交还。
+
+const KEYCHAIN_HELPERS = ['manager', 'manager-core', 'wincred', 'osxkeychain', 'libsecret', 'gnome-keyring'];
+
+// keychain：系统密码库；gate：gh / glab 门卫；cache：只记在内存里；plain：明文文件；other：不认识
+function helperKind(cmd) {
+  const s = String(cmd || '').trim();
+  const gate = s.match(/^!.*?(?:[\\/'"\s!])(gh|glab)(?:\.exe)?['"]?\s+auth\s+git-credential\b/i) || s.match(/^!(gh|glab)\s+auth\s+git-credential\b/i);
+  if (gate) return { kind: 'gate', tool: gate[1].toLowerCase() };
+  const first = s.replace(/^!/, '').match(/^\s*(?:"([^"]*)"|'([^']*)'|(\S+))/) || [];
+  const name = path.basename(String(first[1] || first[2] || first[3] || '').replace(/\\/g, '/'))
+    .replace(/\.exe$/i, '').replace(/^git-credential-/, '').toLowerCase();
+  if (KEYCHAIN_HELPERS.includes(name)) return { kind: 'keychain', name };
+  if (name === 'cache') return { kind: 'cache', name };
+  if (name === 'store') return { kind: 'plain', name };
+  return { kind: 'other', name: name || s };
+}
+
+// credential.<网址>.helper 里的网址：只认站点级的写法（https、不带用户名和路径），返回站点；否则返回空
+function urlHost(u) {
+  const m = String(u || '').match(/^(?:([a-z][a-z0-9+.-]*):\/\/)?(?:([^@/]*)@)?([^/:]+)(?::(\d+))?(\/.*)?$/i);
+  if (!m || (m[1] && m[1].toLowerCase() !== 'https') || m[2] || (m[4] && m[4] !== '443') || (m[5] && m[5] !== '/')) return '';
+  return m[3].toLowerCase();
+}
+
+function urlCovers(u, host) {
+  const pat = urlHost(u).split('.'), h = host.split('.');
+  return pat[0] !== '' && pat.length === h.length && pat.every((p, i) => p === '*' || p === h[i]);
+}
+
+async function readCredConfig() {
+  const args = ['config', '--show-origin', '--show-scope', '-z', '--get-regexp', '^credential\\.'];
+  let r = await git(args, { timeout: 10000 });
+  // Git 2.26 以前没有 --show-scope：只拿文件，按路径认出全局配置
+  const noScope = r.code !== 0 && /show-scope/.test(r.stderr);
+  if (noScope) r = await git(args.filter(a => a !== '--show-scope'), { timeout: 10000 });
+  const globals = [process.env.GIT_CONFIG_GLOBAL, path.join(HOME, '.gitconfig'), path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'git', 'config')].filter(Boolean);
+  const step = noScope ? 2 : 3;
+  const parts = r.stdout.split('\0'), out = [];
+  for (let i = 0; i + step - 1 < parts.length; i += step) {
+    const file = parts[i + step - 2].replace(/^file:/, ''), kv = parts[i + step - 1], nl = kv.indexOf('\n');
+    const key = nl < 0 ? kv : kv.slice(0, nl);
+    const m = key.match(/^credential\.(?:(.+)\.)?helper$/i);
+    const scope = noScope ? (globals.some(g => samePath(g, file)) ? 'global' : 'system') : parts[i];
+    if (m) out.push({ scope, file, key, url: m[1] || '', value: nl < 0 ? '' : kv.slice(nl + 1) });
+  }
+  return out;
+}
+
+// 某个站点（不给站点 = 通用的）实际依次调用的助手
+function chainFor(entries, host) {
+  let chain = [];
+  for (const e of entries) {
+    if (e.url && (!host || !urlCovers(e.url, host))) continue;
+    if (!e.value) chain = [];
+    else chain.push(Object.assign({ cmd: e.value, scope: e.scope, file: e.file }, helperKind(e.value)));
+  }
+  return chain;
+}
+
+function chainStatus(chain) {
+  const has = k => chain.some(x => x.kind === k);
+  if (!chain.length) return 'none';
+  if (has('gate') && !has('keychain') && !has('plain') && !has('other')) return 'gate';
+  if (has('plain')) return 'plain';
+  if (has('keychain')) return 'ok';
+  return has('cache') ? 'cache' : 'other';
+}
+
+// 读一次 git 配置，几秒内的多次读写共用（state() 会强制重读）
+let helperCache = null;
+function helperInfo(fresh) {
+  if (fresh || !helperCache || Date.now() - helperCache.time > 5000) {
+    helperCache = { time: Date.now(), p: readCredConfig().then(entries => {
+      const base = chainFor(entries, '');
+      return { entries, base: chainStatus(base), store: base.filter(x => x.kind !== 'gate') };
+    }) };
+  }
+  return helperCache.p;
+}
+
+// status：ok / gate（被 gh、glab 接管）/ cache / plain / none / other。fixable：能一键交还（只删全局配置，且有系统密码库接手）
+function hostHelper(info, host) {
+  const chain = chainFor(info.entries, normHost(host));
+  const gate = chain.find(x => x.kind === 'gate');
+  const status = chainStatus(chain);
+  return { status, helpers: chain.map(x => x.cmd), tool: gate ? gate.tool : '', scope: gate ? gate.scope : '', file: gate ? gate.file : '',
+    fixable: status === 'gate' && gate.scope === 'global' && info.store.some(x => x.kind === 'keychain') };
+}
+
+// 工具自己读写 token 用的参数：站点被 gh / glab 接管时，换成通用的系统密码库
+async function credArgs(host) {
+  const info = await helperInfo();
+  if (!info.store.length || !chainFor(info.entries, normHost(host)).some(x => x.kind === 'gate')) return [];
+  return ['-c', 'credential.helper='].concat(...info.store.map(x => ['-c', 'credential.helper=' + x.cmd]));
+}
+
+// 一键交还要删的行：门卫所在文件里，这个站点（gh 还有 gist.站点）上含门卫的那几个键，连同前面清空用的空值
+async function releasePlan(host) {
+  host = normHost(host);
+  const info = await helperInfo(true);
+  const h = hostHelper(info, host);
+  if (h.status !== 'gate') throw new Error(`${host} 没有被接管，不用交还`);
+  if (h.scope !== 'global') throw new Error(`接管的配置写在${h.scope === 'system' ? '系统级' : '项目里的'} git 配置里（${h.file}），需要手动删除`);
+  if (!h.fixable) throw new Error('本机没有系统密码库（credential.helper）可以接手，交还后 token 没地方存');
+  const mine = info.entries.filter(e => e.url && e.scope === 'global' && e.file === h.file && (urlCovers(e.url, host) || urlCovers(e.url, 'gist.' + host)));
+  const keys = [...new Set(mine.filter(e => helperKind(e.value).kind === 'gate').map(e => e.key))];
+  const lines = keys.map(key => ({ key, values: mine.filter(e => e.key === key).map(e => e.value) }));
+  // gh 里登录的账号：交还后 git 改从系统密码库取 token，先看那边有没有、是不是同一个
+  let accounts = [];
+  if (h.tool === 'gh') {
+    const g = await ghRefresh();
+    accounts = await Promise.all((g.accounts || []).filter(x => x.host === host && !/_TOKEN$/.test(x.source)).map(async x => {
+      const r = await gh(['auth', 'token', '-h', host, '-u', x.login]);
+      const token = r.code === 0 ? r.stdout.trim() : '';
+      const have = token ? await credGet(host, x.login) : null;
+      return { login: x.login, token, state: !token ? 'unknown' : !have ? 'missing' : have.password === token ? 'same' : 'differs' };
+    }));
+  }
+  return { host, tool: h.tool, file: h.file, lines, accounts };
+}
+
+const fileHash = f => { try { return crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch (e) { return ''; } };
+
+// GitHub 明确说不认这个 token（401）才算失效；连不上、其它站点都当作还能用
+async function tokenRejected(host, token) {
+  if (normHost(host) !== 'github.com') return false;
+  const r = await getJson('https://api.github.com/user', { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' });
+  return r.status === 401;
+}
+
+// ------------------------------------------------------------------ GitHub CLI（gh）：查看 / 切换 / 登录 / 登出
+// 全部通过 gh 自己的命令，不直接读写它的配置文件和密码库条目；token 只走标准输入输出。
+// 注意 gh 的规则：每登录一个账号，它就成了这个站点的当前账号
+
+const GH_ENV = { GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', GH_SPINNER_DISABLED: '1', NO_COLOR: '1' };
+let ghExe = 'gh';
+let ghCache = null;  // 上一次读到的 gh 状态（要联网验证 token，比较慢，不放进每次的 state() 里现读）
+const gh = (args, opts = {}) => run(ghExe, args, Object.assign({ timeout: 30000 }, opts, { env: Object.assign({}, GH_ENV, opts.env) }));
+
+// 老版本 gh 没有 --json：读文字输出
+function parseGhStatusText(text) {
+  const out = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = line.match(/(Logged in to|Failed to log in to) (\S+) (?:account|as) (\S+)(?: \(([^)]*)\))?/);
+    if (m) {
+      out.push({ host: normHost(m[2]), login: m[3], active: false, ok: m[1] === 'Logged in to', error: m[1] === 'Logged in to' ? '' : 'token 无效或已过期，需要重新登录 gh', source: m[4] || '' });
+      continue;
+    }
+    const a = line.match(/Active account:\s*(true|false)/);
+    if (a && out.length) out[out.length - 1].active = a[1] === 'true';
+  }
+  // 更老的版本一个站点只能登录一个账号，也没有“当前账号”的说法
+  for (const x of out) if (!out.some(y => y.host === x.host && y.active) && out.filter(y => y.host === x.host).length === 1) x.active = true;
+  return out;
+}
+
+async function ghRefresh() {
+  ghExe = 'gh';
+  let v = await run(ghExe, ['--version'], { timeout: 15000 });
+  if (v.code !== 0) {
+    // 不在 PATH 里（比如从开始菜单 / 访达启动），但 setup-git 写进 git 配置的完整路径还能用
+    const info = await helperInfo();
+    const p = info.entries.map(e => (e.value.match(/^!\s*(?:'([^']+)'|"([^"]+)"|(\S+))\s+auth\s+git-credential/) || []))
+      .map(m => m[1] || m[2] || m[3]).find(x => x && /(^|[\\/])gh(\.exe)?$/i.test(x) && fs.existsSync(x));
+    if (p) { ghExe = p; v = await run(ghExe, ['--version'], { timeout: 15000 }); }
+  }
+  if (v.code !== 0) return (ghCache = { installed: false });
+  const s = await gh(['auth', 'status', '--json', 'hosts']);
+  let accounts;
+  try {
+    const hosts = JSON.parse(s.stdout).hosts || {};
+    accounts = [].concat(...Object.entries(hosts).map(([host, list]) => list.map(x => ({ host: normHost(host), login: x.login || '', active: !!x.active,
+      ok: x.state === 'success', source: x.tokenSource || '',
+      error: x.state === 'success' ? '' : x.state === 'timeout' || /no such host|timeout|timed out|dial tcp|connection|proxy|EOF/i.test(x.error || '')
+        ? '暂时连不上，没法确认 token 是否有效' : 'token 无效或已过期，需要重新登录 gh' }))));
+  } catch (e) {
+    accounts = parseGhStatusText(s.stdout + '\n' + s.stderr);
+  }
+  const env = accounts.find(x => /_TOKEN$/.test(x.source));
+  return (ghCache = { installed: true, version: (v.stdout.match(/gh version (\S+)/) || [])[1] || '', accounts, envToken: env ? env.source : '', time: Date.now() });
+}
+
+function ghCheck(r, what) {
+  if (r.code === 0) return;
+  const last = scrub(r.stderr || r.stdout).trim().split(/\r?\n/).filter(Boolean).slice(-2).join('\n');
+  throw new Error(`${what}失败` + (last ? '：' + last : ''));
+}
+
+// gh 只接受 token；经典 token 还要至少有 repo 和 read:org 权限（gh 自己的要求），先查好，免得 gh 报看不懂的错
+async function ghTokenCheck(host, token) {
+  if (!looksLikeToken(token)) throw new Error('这个账号存的是登录密码，gh 只接受 token');
+  if (normHost(host) !== 'github.com') return;
+  const r = await getJson('https://api.github.com/user', { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' });
+  if (r.status === 401) throw new Error('GitHub 不认这个 token（无效、已过期或被撤销）');
+  const scopes = r.status === 200 && r.headers && r.headers.get ? r.headers.get('x-oauth-scopes') : null;
+  if (!scopes) return;  // 细粒度 token 没有这一项，gh 也不查
+  const have = scopes.split(',').map(x => x.trim());
+  const missing = [];
+  if (!have.includes('repo')) missing.push('repo');
+  if (!['read:org', 'write:org', 'admin:org'].some(x => have.includes(x))) missing.push('read:org');
+  if (missing.length) throw new Error(`这个经典 token 缺少 gh 要求的权限：${missing.join('、')}。到 GitHub 给它勾上后再试`);
 }
 
 // ------------------------------------------------------------------ 地址解析
@@ -805,6 +1020,7 @@ async function sysInfo() {
     proxy: extraEnv.HTTPS_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || '',
     home: HOME,
     docs: docsDir && fs.existsSync(docsDir) ? docsDir : '',
+    version: PKG.version,
     sourcetree: findSourcetree(),
     ides: jetbrainsIdes(),
     confPath,
@@ -813,11 +1029,17 @@ async function sysInfo() {
 
 async function state() {
   const c = loadConf();
+  const info = await helperInfo(true);  // 用户可能刚在终端里跑过 gh auth setup-git
   const [accounts, repos, sys] = await Promise.all([Promise.all(c.accounts.map(accountView)), allRepos(c), sysInfo()]);
   // 本机还没对应到任何账号的 SSH 密钥
   const localKeys = (c.localKeys || []).filter(k => fs.existsSync(k.path) && !c.accounts.some(a => a.auth === 'ssh' && samePath(a.sshKey, k.path)));
+  // 各站点的凭据助手：用到 HTTPS 的站点，加上配置里单独设过助手的站点
+  const hosts = new Set([...accounts.filter(a => a.auth === 'token').map(a => normHost(a.host)), ...repos.filter(r => r.proto === 'https' && r.nhost).map(r => r.nhost),
+    ...info.entries.map(e => urlHost(e.url)).filter(h => h && !h.includes('*') && !h.startsWith('gist.'))]);
+  const helpers = { base: info.base, store: info.store.map(x => x.cmd), hosts: {} };
+  for (const h of hosts) helpers.hosts[h] = hostHelper(info, h);
   return { accounts, repos, history: c.history.slice(-100).reverse(), sys, localKeys, lastSync: c.lastSync || 0,
-    cloneDir: c.cloneDir && fs.existsSync(c.cloneDir) ? c.cloneDir : '' };
+    cloneDir: c.cloneDir && fs.existsSync(c.cloneDir) ? c.cloneDir : '', helpers, gh: ghCache };
 }
 
 // 账号的“身份”：站点 + 用户名 + 方式（SSH 再加密钥文件）。用户删掉的自动识别账号按这个记下来，不再自动加回
@@ -928,6 +1150,52 @@ async function uploadKeyFor(accountId, keyPath, title) {
   return { uploaded: true, existed: !!up.existed, verified: !!id.login, login, msg: id.login ? '' : id.msg, pub, keyPath };
 }
 
+// ------------------------------------------------------------------ 检查更新：GitHub 上最新的正式版（不含预发布）
+
+const PKG = require('../package.json');
+const REPO = (String((PKG.repository || {}).url || '').match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/) || [])[1] || '50kg/git-account-manager';
+
+function parseVer(v) {
+  const m = String(v || '').trim().replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+  return m ? { nums: [+m[1], +m[2], +m[3]], pre: m[4] ? m[4].split('.') : [] } : null;
+}
+
+// a 比 b 新返回正数。预发布（1.5.0-beta.1）比同号的正式版旧
+function cmpVer(a, b) {
+  const x = parseVer(a), y = parseVer(b);
+  if (!x || !y) return 0;
+  for (let i = 0; i < 3; i++) if (x.nums[i] !== y.nums[i]) return x.nums[i] - y.nums[i];
+  if (!x.pre.length || !y.pre.length) return y.pre.length - x.pre.length;
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i], q = y.pre[i];
+    if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+    const np = /^\d+$/.test(p), nq = /^\d+$/.test(q);
+    if (np && nq && +p !== +q) return +p - +q;
+    if (np !== nq) return np ? -1 : 1;
+    if (!np && p !== q) return p < q ? -1 : 1;
+  }
+  return 0;
+}
+
+// 这台电脑该下哪个文件：Windows 现在用的是便携版就给便携版，否则给安装版；Mac 按芯片
+function pickAsset(assets) {
+  const re = IS_WIN ? (process.env.PORTABLE_EXECUTABLE_FILE ? /portable\.exe$/i : /Setup.*\.exe$/i)
+    : IS_MAC ? (process.arch === 'arm64' ? /arm64\.dmg$/i : /x64\.dmg$/i) : null;
+  const a = re && (assets || []).find(x => re.test(x.name));
+  return a ? { name: a.name, url: a.browser_download_url, size: a.size } : null;
+}
+
+async function checkUpdate(current = PKG.version) {
+  const r = await getJson(`https://api.github.com/repos/${REPO}/releases/latest`, { Accept: 'application/vnd.github+json' });
+  if (r.status !== 200 || !r.body || !r.body.tag_name) {
+    throw new Error(r.status === 0 ? `连不上 GitHub（${r.error}），检查网络/代理`
+      : r.status === 403 || r.status === 429 ? 'GitHub 限制了访问次数，过一会儿再试' : `GitHub 返回 ${r.status}`);
+  }
+  const latest = r.body.tag_name.replace(/^v/i, '');
+  return { current, latest, hasUpdate: cmpVer(latest, current) > 0, name: r.body.name || r.body.tag_name, notes: r.body.body || '',
+    url: r.body.html_url, publishedAt: r.body.published_at || '', asset: pickAsset(r.body.assets), time: Date.now() };
+}
+
 function upsertAccount(c, fields) {
   let a = c.accounts.find(x => normHost(x.host) === normHost(fields.host) && x.auth === fields.auth &&
     x.username.toLowerCase() === fields.username.toLowerCase() && (x.auth !== 'ssh' || samePath(x.sshKey, fields.sshKey)));
@@ -941,6 +1209,7 @@ function upsertAccount(c, fields) {
 const api = {
   state,
   async ides() { return jetbrainsIdes(); },
+  checkUpdate: () => checkUpdate(),
 
   async addRepos({ paths }) {
     const found = [];
@@ -1006,6 +1275,23 @@ const api = {
       const h = c.history[c.history.length - 1 - index];
       if (!h) throw new Error('找不到这条记录');
       if (h.kind === 'clone') throw new Error('这是新拉取的项目，没有可以撤销的地址改动');
+      if (h.kind === 'helper') {
+        if (h.account === '撤销') throw new Error('这条已经是撤销记录了');
+        // 交还之后文件没被动过：直接用备份原样恢复；动过的话，把删掉的行加回去（git 会把空了的段落标题一起删掉，加回去的位置可能不同）
+        if (h.backup && fs.existsSync(h.backup) && h.afterHash && fileHash(h.file) === h.afterHash) fs.copyFileSync(h.backup, h.file);
+        else {
+          for (const l of h.lines) {
+            await git(['config', '--file', h.file, '--unset-all', l.key], { timeout: 10000 });
+            for (const v of l.values) {
+              const r = await git(['config', '--file', h.file, '--add', l.key, v], { timeout: 10000 });
+              if (r.code !== 0) throw new Error('修改 git 配置失败：' + scrub(r.stderr));
+            }
+          }
+        }
+        helperCache = null;
+        c.history.push(Object.assign({}, h, { time: Date.now(), account: '撤销', moved: [] }));
+        return;
+      }
       if (h.oldUrl.includes('***')) throw new Error('旧地址里含有密码，出于安全没有保存，无法撤销');
       await applyChange(h.path, h.remote, h.oldUrl, h.oldSsh);
       c.history.push({ time: Date.now(), path: h.path, remote: h.remote, oldUrl: h.newUrl, newUrl: h.oldUrl,
@@ -1015,6 +1301,83 @@ const api = {
   },
 
   inspectToken: ({ token, host }) => inspectToken(token, host),
+
+  // 一键交还：先把 gh 里登录的账号 token 存进系统密码库，再删掉全局配置里 gh / glab 写的那几行（先备份）。dryRun 只返回要做什么
+  async releaseHelper({ host, dryRun }) {
+    const plan = await releasePlan(host);
+    if (dryRun) return Object.assign({}, plan, { accounts: plan.accounts.map(a => ({ login: a.login, state: a.state })) });
+    const moved = [];
+    for (const a of plan.accounts) {
+      if (a.state === 'missing') { await credStore(plan.host, a.login, a.token); moved.push(a.login); }
+      else if (a.state === 'differs') {
+        // 系统密码库里那个还能用就留着；GitHub 明确不认了才换成 gh 里的
+        const old = await credGet(plan.host, a.login);
+        if (old && await tokenRejected(plan.host, old.password)) { await credStore(plan.host, a.login, a.token); moved.push(a.login); }
+      }
+    }
+    const dir = path.join(path.dirname(confPath), 'backup');
+    fs.mkdirSync(dir, { recursive: true });
+    const backup = path.join(dir, `gitconfig-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    fs.copyFileSync(plan.file, backup);
+    // 先记下来再改：记录存不进去（比如配置文件被安全软件锁住）就不动 git 配置，免得改了却没法撤销
+    const time = Date.now();
+    await withConf(c => {
+      c.history.push({ time, kind: 'helper', host: plan.host, tool: plan.tool, file: plan.file, path: plan.file, lines: plan.lines, backup, moved, account: '交还' });
+      c.history = c.history.slice(-300);
+    }).catch(e => { throw new Error(`没能保存修改记录（${e.message}），为了能撤销，git 配置没有改`); });
+    for (const l of plan.lines) {
+      const r = await git(['config', '--file', plan.file, '--unset-all', l.key], { timeout: 10000 });
+      if (r.code !== 0 && r.code !== 5) {  // 5 = 已经没有这一项
+        if (fileHash(plan.file) === fileHash(backup)) await withConf(c => { c.history = c.history.filter(h => h.time !== time); });
+        throw new Error('修改 git 配置失败：' + scrub(r.stderr));
+      }
+    }
+    const afterHash = fileHash(plan.file);
+    await withConf(c => { const h = c.history.find(x => x.time === time && x.kind === 'helper'); if (h) h.afterHash = afterHash; }).catch(() => {});
+    const still = hostHelper(await helperInfo(true), plan.host).status === 'gate';
+    return { moved, still, state: await state() };
+  },
+
+  async ghRefresh() {
+    await ghRefresh();
+    return state();
+  },
+
+  async ghSwitch({ host, login }) {
+    ghCheck(await gh(['auth', 'switch', '-h', normHost(host), '-u', login]), '切换 gh 账号');
+    await ghRefresh();
+    return state();
+  },
+
+  async ghLogout({ host, login }) {
+    ghCheck(await gh(['auth', 'logout', '-h', normHost(host), '-u', login]), '从 gh 登出');
+    await ghRefresh();
+    return state();
+  },
+
+  // 把工具里的 token 账号登录到 gh（gh 会把它设为这个站点的当前账号）
+  async ghLogin({ id }) {
+    const a = findAcc(loadConf(), id);
+    if (!a || a.auth !== 'token') throw new Error('只有 token 账号能登录到 gh');
+    if (normHost(a.host) !== 'github.com') throw new Error('gh 只支持 GitHub 账号');
+    const c = await credGet(a.host, a.username);
+    if (!c) throw new Error('系统密码库里没有这个账号的 token');
+    await ghTokenCheck(a.host, c.password);
+    ghCheck(await gh(['auth', 'login', '--with-token', '-h', normHost(a.host)], { input: c.password + '\n', timeout: 60000 }), '登录到 gh');
+    await ghRefresh();
+    return state();
+  },
+
+  // 把 gh 里登录的账号导入工具：token 存进系统密码库（gh 那边不动）
+  async ghImport({ host, login }) {
+    host = normHost(host);
+    const r = await gh(['auth', 'token', '-h', host, '-u', login]);
+    ghCheck(r, '读取 gh 的登录信息');
+    const token = r.stdout.trim();
+    const have = await credGet(host, login);
+    if (have && have.password !== token) throw new Error(`系统密码库里已经存了 ${login} 的另一个 token，没有覆盖。要换成 gh 里的，请在这个账号的“编辑”里更新 token`);
+    return api.addToken({ token, host });
+  },
 
   // 只填 token：识别后存进系统密码库并登记账号
   async addToken({ token, host }) {
@@ -1192,13 +1555,17 @@ const api = {
 
   // 打开软件时自动同步本机账号：钥匙串里存过的 Git 账号 + ~/.ssh 里能识别出主人的密钥
   async autoSync() {
-    const { keys, stored } = await api.scanLocal();
-    // 工具里有、本机已经没有的账号（在工具外面删掉了）
+    const [{ keys, stored }] = await Promise.all([api.scanLocal(), ghRefresh().catch(() => null)]);
+    // 工具里有、本机已经没有的账号（在别处删掉了，或者 token 失效后被 git 自动清掉）
     const before = loadConf().accounts;
+    const info = await helperInfo(true);
     const gone = new Set();
     await Promise.all(before.map(async a => {
-      const exists = a.auth === 'ssh' ? fs.existsSync(a.sshKey || '') : !!(await credGet(a.host, a.username));
-      if (!exists) gone.add(a.id);
+      if (a.auth === 'ssh') { if (!fs.existsSync(a.sshKey || '')) gone.add(a.id); return; }
+      if (await credGet(a.host, a.username)) return;
+      // 被 gh / glab 接管、又没有系统密码库可以绕过时，读不到不代表没有：不删
+      if (hostHelper(info, a.host).status === 'gate' && !info.store.length) return;
+      gone.add(a.id);
     }));
     const added = [];
     await withConf(c => {
@@ -1226,7 +1593,7 @@ const api = {
         matched: k.matches.length > 0, errors: k.errors || [] }));
       c.lastSync = Date.now();
     });
-    return { added, removed: [...gone].length, state: await state() };
+    return { added, removed: gone.size, removedKeys: before.filter(a => gone.has(a.id) && a.auth === 'ssh').length, state: await state() };
   },
 
   // 删除账号 = 本机也删：token 从系统密码库删除；SSH 密钥文件移到废纸篓
@@ -1307,4 +1674,5 @@ const api = {
 
 const hasRepo = p => loadConf().repos.includes(p);
 
-module.exports = { init, setEnv, api, hasRepo, findSourcetree, parseUrl, classify, planBind, annotate, scrub, normHost, IS_MAC, IS_WIN };
+module.exports = { init, setEnv, api, hasRepo, findSourcetree, parseUrl, classify, planBind, annotate, scrub, normHost,
+  helperKind, chainFor, chainStatus, urlHost, parseGhStatusText, cmpVer, pickAsset, checkUpdate, IS_MAC, IS_WIN };
