@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 — 2026-11-01
 
 ### New / 新功能
 - **Project groups.** Sort projects into your own groups — work, personal, or anything else. The Projects page switches between *By host* and *By group*; in group view you can create groups, add several projects at once, rename, reorder and delete groups, and every project's details have a group button. Groups only organize the list: they're kept in the app's own settings and never touch the projects.
