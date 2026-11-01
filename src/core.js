@@ -453,25 +453,48 @@ function findReposIn(dir, depth = 0, out = []) {
   return out;
 }
 
+// 项目实际生效的 git 配置，带上每一项来自哪一层（local / global / system…）。
+// Git 2.26 以前没有 --show-scope：项目自己的另读一次，其它层分不清（scope 记为 unknown）
+async function repoConfig(p) {
+  const parse = (text, scope) => text.split(/\r?\n/).map(line => {
+    let sc = scope;
+    if (!sc) { const tab = line.indexOf('\t'); sc = line.slice(0, tab); line = line.slice(tab + 1); }
+    const i = line.indexOf('=');
+    return i > 0 ? { scope: sc, key: line.slice(0, i), value: line.slice(i + 1) } : null;
+  }).filter(Boolean);
+  const r = await git(['config', '--list', '--show-scope'], { cwd: p, timeout: 10000 });
+  if (r.code === 0 || !/show-scope/.test(r.stderr)) return parse(r.stdout);
+  const [all, local] = await Promise.all([git(['config', '--list'], { cwd: p, timeout: 10000 }), git(['config', '--local', '--list'], { cwd: p, timeout: 10000 })]);
+  return parse(all.stdout, 'unknown').concat(parse(local.stdout, 'local'));
+}
+
+// 提交身份：name / email 是实际生效的；local 是项目里单独设的（null = 没设）；base 是不算项目时的（全局等）
+const noIdent = () => ({ name: '', email: '', local: { name: null, email: null }, base: { name: '', email: '' } });
+
 async function repoInfo(p) {
   const info = { path: p, name: path.basename(p), exists: fs.existsSync(p) };
   if (!info.exists || !isRepo(p)) {
     return Object.assign(info, parseUrl(''), { exists: false, remote: '', url: '', remotes: [], sshCommand: '', sshKey: '', branch: '', pushUrl: false,
-      dirty: 0, upstream: false, ahead: 0, behind: 0 });
+      dirty: 0, upstream: false, ahead: 0, behind: 0, ident: noIdent() });
   }
   const [cfg, br, st, ab] = await Promise.all([
-    git(['config', '--local', '--list'], { cwd: p, timeout: 10000 }),
+    repoConfig(p),
     git(['symbolic-ref', '--short', '-q', 'HEAD'], { cwd: p, timeout: 10000 }),
     git(['status', '--porcelain'], { cwd: p, timeout: 15000 }),
     git(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], { cwd: p, timeout: 10000 }),
   ]);
   const abm = ab.code === 0 ? ab.stdout.trim().split(/\s+/).map(Number) : null;
-  const remotes = {}, pushUrls = new Set();
+  const remotes = {}, pushUrls = new Set(), ident = noIdent();
   let sshCmd = '';
-  for (const line of cfg.stdout.split(/\r?\n/)) {
-    const i = line.indexOf('=');
-    if (i < 0) continue;
-    const k = line.slice(0, i), v = line.slice(i + 1);
+  for (const { scope, key: k, value: v } of cfg) {
+    const u = k.match(/^user\.(name|email)$/i);
+    if (u) {
+      const f = u[1].toLowerCase();
+      ident[f] = v;
+      if (scope === 'local') ident.local[f] = v; else if (scope !== 'unknown') ident.base[f] = v;
+      continue;
+    }
+    if (scope !== 'local') continue;
     const m = k.match(/^remote\.(.+)\.(url|pushurl)$/i);
     if (m) {
       if (m[2].toLowerCase() === 'url') { if (!(m[1] in remotes)) remotes[m[1]] = v; } else pushUrls.add(m[1]);
@@ -484,7 +507,7 @@ async function repoInfo(p) {
     remote, url: maskUrl(url), remotes: names, sshCommand: sshCmd, sshKey: sshKeyOf(sshCmd),
     branch: br.stdout.trim(), pushUrl: pushUrls.has(remote),
     dirty: st.code === 0 ? st.stdout.split(/\r?\n/).filter(Boolean).length : 0,
-    upstream: !!abm, ahead: abm ? abm[0] : 0, behind: abm ? abm[1] : 0,
+    upstream: !!abm, ahead: abm ? abm[0] : 0, behind: abm ? abm[1] : 0, ident,
   });
 }
 
@@ -525,6 +548,8 @@ function annotate(info, accounts) {
     const hit = v.repos.find(r => r.name.toLowerCase() === full);
     info.tokenAccess = hit ? (hit.push ? 'push' : 'read') : 'missing';
   }
+  // 绑定的账号设了提交身份，项目实际用的却不是它
+  info.identWarn = !!(bound && info.ident && IDENT_FIELDS.some(([f, k]) => bound[k] && info.ident[f].toLowerCase() !== bound[k].toLowerCase()));
   return info;
 }
 
@@ -545,6 +570,45 @@ function planBind(info, acc) {
   if (acc.ssh443 && normHost(acc.host) === 'gitlab.com') return { url: `ssh://git@altssh.gitlab.com:443/${p}.git`, ssh: cmd };
   return { url: `git@${acc.host}:${p}.git`, ssh: cmd };
 }
+
+// ------------------------------------------------------------------ 提交身份（user.name / user.email）
+// 推送用哪个账号由 token / 密钥决定；提交上显示的名字和头像，看的是提交时的 user.name / user.email，和谁推送无关。
+// 账号可以带一个提交身份，换到这个账号时一起写进项目的 .git/config；项目也可以单独改。只影响以后的新提交。
+
+const IDENT_FIELDS = [['name', 'commitName'], ['email', 'commitEmail']];
+
+function cleanIdent(name, email) {
+  name = String(name || '').trim();
+  email = String(email || '').trim();
+  if (/[<>\r\n]/.test(name)) throw new Error('名字里不能有 < > 或换行');
+  if (email && !/^[^\s<>@]+@[^\s<>@]+$/.test(email)) throw new Error('邮箱格式不对：' + email);
+  return { name, email };
+}
+
+// 换账号时提交身份怎么改：新账号设了就写进项目；没设（或不指定账号）时，只去掉原来那个账号写进去的，项目自己另设的不动。
+// 返回改动列表 [{ key, old, new }]，old / new 为 null 表示项目里没设（用全局的）
+function planIdent(info, acc, accounts) {
+  if (!info.ident) return [];
+  const prev = accounts.find(a => a.id === info.boundId);
+  const out = [];
+  for (const [f, k] of IDENT_FIELDS) {
+    const old = info.ident.local[f];
+    let val = old;
+    if (acc && acc[k]) val = acc[k];
+    else if (prev && prev[k] && old === prev[k]) val = null;
+    if (val !== old) out.push({ key: 'user.' + f, old, new: val });
+  }
+  return out;
+}
+
+async function applyIdent(p, changes) {
+  for (const x of changes || []) {
+    const r = await git(x.new == null ? ['config', '--local', '--unset-all', x.key] : ['config', '--local', '--replace-all', x.key, x.new], { cwd: p, timeout: 10000 });
+    if (r.code !== 0 && !(x.new == null && r.code === 5)) throw new Error('修改提交身份失败：' + scrub(r.stderr));  // 5 = 本来就没有这一项
+  }
+}
+
+const revertIdent = list => (list || []).map(x => ({ key: x.key, old: x.new, new: x.old }));
 
 // 用户填的仓库地址。也接受从浏览器地址栏复制的网页地址（…/tree/main、?tab=readme 之类）和省略 https:// 的写法
 function repoFromUrl(input) {
@@ -725,6 +789,63 @@ const PROVIDERS = {
     };
   },
 };
+
+// 网站上的个人资料：编辑账号时推荐提交用的名字和邮箱。有 token 用 token 查（能多拿到不公开的邮箱），否则查公开资料。
+// 隐私邮箱（noreply）按网站固定的格式用账号 id 拼出来；Gitee 的格式没有公开说明，只用它自己列出来的邮箱
+const NOREPLY = {
+  'github.com': (id, login) => `${id}+${login}@users.noreply.github.com`,
+  'gitlab.com': (id, login) => `${id}-${login}@users.noreply.gitlab.com`,
+};
+const PROFILES = {
+  'github.com': async (login, token) => {
+    const h = Object.assign({ Accept: 'application/vnd.github+json' }, token ? { Authorization: 'Bearer ' + token } : {});
+    let u = token ? await getJson('https://api.github.com/user', h) : null;
+    if (!u || u.status !== 200) { delete h.Authorization; u = await getJson('https://api.github.com/users/' + encodeURIComponent(login), h); token = null; }
+    if (u.status !== 200) return null;
+    // 列出全部邮箱要 token 有读邮箱的权限，大多没有，查不到就算了
+    const e = token ? await getJson('https://api.github.com/user/emails', h) : {};
+    const listed = Array.isArray(e.body) ? e.body.filter(x => x.verified).map(x => ({ email: x.email, kind: x.primary ? 'primary' : 'other' })) : [];
+    return { id: u.body.id, login: u.body.login, name: u.body.name || '', emails: listed.concat(u.body.email ? [{ email: u.body.email, kind: 'public' }] : []) };
+  },
+  'gitlab.com': async (login, token) => {
+    const u = token ? await getJson('https://gitlab.com/api/v4/user', { 'PRIVATE-TOKEN': token }) : null;
+    if (u && u.status === 200) {
+      const b = u.body;
+      return { id: b.id, login: b.username, name: b.name || '', emails: [['commit', b.commit_email], ['primary', b.email], ['public', b.public_email]]
+        .filter(x => x[1]).map(([kind, email]) => ({ email, kind })) };
+    }
+    const r = await getJson('https://gitlab.com/api/v4/users?username=' + encodeURIComponent(login));
+    const b = Array.isArray(r.body) ? r.body[0] : null;
+    return r.status === 200 && b ? { id: b.id, login: b.username, name: b.name || '', emails: [] } : null;
+  },
+  'gitee.com': async (login, token) => {
+    const q = token ? '?access_token=' + encodeURIComponent(token) : '';
+    let u = token ? await getJson('https://gitee.com/api/v5/user' + q) : null;
+    if (!u || u.status !== 200) { u = await getJson('https://gitee.com/api/v5/users/' + encodeURIComponent(login)); token = null; }
+    if (u.status !== 200 || !u.body) return null;
+    const e = token ? await getJson('https://gitee.com/api/v5/emails' + q) : {};
+    const listed = (Array.isArray(e.body) ? e.body : []).map(x => typeof x === 'string' ? x : x && x.email).filter(Boolean)
+      .map(email => ({ email, kind: /noreply/i.test(email) ? 'noreply' : 'other' }));
+    return { id: u.body.id, login: u.body.login, name: u.body.name || '', emails: listed.concat(u.body.email ? [{ email: u.body.email, kind: 'public' }] : []) };
+  },
+};
+
+async function identityHints(acc) {
+  const host = normHost(acc.host), login = loginOf(acc);
+  if (!PROFILES[host]) return { name: '', emails: [] };
+  let token = null;
+  if (acc.auth === 'token') {
+    const c = await credGet(acc.host, acc.username);
+    if (c && looksLikeToken(c.password)) token = c.password;
+  }
+  const p = await PROFILES[host](login, token);
+  if (!p) return { name: '', emails: [], error: '没查到网站上的资料（网络不通，或者账号名不对）' };
+  const emails = (NOREPLY[host] && p.id ? [{ email: NOREPLY[host](p.id, p.login), kind: 'noreply' }] : []).concat(p.emails);
+  const ORDER = ['noreply', 'commit', 'primary', 'public', 'other'];
+  const seen = new Set();
+  return { name: p.name || p.login, emails: emails.sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind))
+    .filter(x => !seen.has(x.email.toLowerCase()) && seen.add(x.email.toLowerCase())) };
+}
 
 function guessHosts(token) {
   if (/^(github_pat_|gh[pousr]_)/.test(token)) return ['github.com'];
@@ -1255,18 +1376,22 @@ const api = {
     const acc = accountId ? findAcc(c, accountId) : null;
     if (accountId && !acc) throw new Error('账号不存在');
     const plan = planBind(info, acc);
+    const ident = planIdent(info, acc, c.accounts);
     const oldUrl = await rawUrl(p, info.remote);
     const preview = { oldUrl: maskUrl(oldUrl), newUrl: maskUrl(plan.url == null ? oldUrl : plan.url),
-      oldSsh: info.sshCommand, newSsh: plan.ssh, note: info.secretInUrl && plan.url != null ? '旧地址里的明文密码会被去掉' : '' };
+      oldSsh: info.sshCommand, newSsh: plan.ssh, ident, identBase: info.ident.base, note: info.secretInUrl && plan.url != null ? '旧地址里的明文密码会被去掉' : '' };
     if (dryRun) return preview;
     await applyChange(p, info.remote, plan.url, plan.ssh);
+    // 提交身份没改成也要把地址的改动记下来，才能撤销
+    const identErr = await applyIdent(p, ident).then(() => null, e => e);
     await withConf(c2 => {
       c2.history.push({ time: Date.now(), path: p, remote: info.remote,
         oldUrl: info.secretInUrl ? maskUrl(oldUrl) : oldUrl, newUrl: plan.url == null ? oldUrl : plan.url,
-        oldSsh: info.sshCommand, newSsh: plan.ssh, account: acc ? `${loginOf(acc)} @ ${acc.host}` : '不指定' });
+        oldSsh: info.sshCommand, newSsh: plan.ssh, ident: identErr ? [] : ident, account: acc ? `${loginOf(acc)} @ ${acc.host}` : '不指定' });
       c2.history = c2.history.slice(-300);
       delete c2.tests[p];
     });
+    if (identErr) throw identErr;
     return state();
   },
 
@@ -1292,10 +1417,16 @@ const api = {
         c.history.push(Object.assign({}, h, { time: Date.now(), account: '撤销', moved: [] }));
         return;
       }
+      if (h.kind === 'ident') {
+        await applyIdent(h.path, revertIdent(h.ident));
+        c.history.push({ time: Date.now(), kind: 'ident', path: h.path, ident: revertIdent(h.ident), account: '撤销' });
+        return;
+      }
       if (h.oldUrl.includes('***')) throw new Error('旧地址里含有密码，出于安全没有保存，无法撤销');
       await applyChange(h.path, h.remote, h.oldUrl, h.oldSsh);
+      await applyIdent(h.path, revertIdent(h.ident));
       c.history.push({ time: Date.now(), path: h.path, remote: h.remote, oldUrl: h.newUrl, newUrl: h.oldUrl,
-        oldSsh: h.newSsh, newSsh: h.oldSsh, account: '撤销' });
+        oldSsh: h.newSsh, newSsh: h.oldSsh, ident: revertIdent(h.ident), account: '撤销' });
       delete c.tests[h.path];
     }).then(state);
   },
@@ -1417,10 +1548,11 @@ const api = {
     return api.verifyAccount({ id: r });
   },
 
-  async updateAccount({ id, label, owners, ssh443, token }) {
+  async updateAccount({ id, label, owners, ssh443, token, commitName, commitEmail }) {
     const c = loadConf();
     const a = findAcc(c, id);
     if (!a) throw new Error('账号不存在');
+    const ident = commitName == null && commitEmail == null ? null : cleanIdent(commitName, commitEmail);
     let verify = null;
     if (token && a.auth === 'token') {
       const i = await inspectToken(token, PROVIDERS[normHost(a.host)] ? a.host : null).catch(e => {
@@ -1440,6 +1572,30 @@ const api = {
       if (!x.owners.length) x.owners = [loginOf(x)];
       if (x.auth === 'ssh') x.ssh443 = !!ssh443;
       if (verify) x.verify = verify;
+      if (ident) for (const [f, k] of IDENT_FIELDS) { if (ident[f]) x[k] = ident[f]; else delete x[k]; }
+    });
+    return state();
+  },
+
+  async identityHints({ id }) {
+    const a = findAcc(loadConf(), id);
+    if (!a) throw new Error('账号不存在');
+    return identityHints(a);
+  },
+
+  // 项目单独改提交身份。name / email 不给 = 不动，给空字符串 = 去掉项目里的设置（用全局的）
+  async setRepoIdentity({ path: p, name, email }) {
+    if (!loadConf().repos.includes(p)) throw new Error('不认识这个项目');
+    const info = await repoInfo(p);
+    if (!info.exists) throw new Error('目录不存在或已不是 Git 项目');
+    const want = cleanIdent(name, email);
+    const ident = IDENT_FIELDS.filter(([f]) => (f === 'name' ? name : email) != null)
+      .map(([f]) => ({ key: 'user.' + f, old: info.ident.local[f], new: want[f] || null })).filter(x => x.old !== x.new);
+    if (!ident.length) return state();
+    await applyIdent(p, ident);
+    await withConf(c => {
+      c.history.push({ time: Date.now(), kind: 'ident', path: p, ident, account: '' });
+      c.history = c.history.slice(-300);
     });
     return state();
   },
@@ -1536,6 +1692,8 @@ const api = {
     } else if (proto === 'https') {
       args.push('-c', 'credential.helper=');  // 不指定账号：不碰系统密码库（认证失败时 git 会把里面的凭据删掉）
     }
+    const ident = acc ? IDENT_FIELDS.filter(([, k]) => acc[k]).map(([f, k]) => ({ key: 'user.' + f, old: null, new: acc[k] })) : [];
+    for (const x of ident) clone.push('--config', `${x.key}=${x.new}`);
     const r = await git(args.concat(clone, [plan.url, dest]), { cwd: parent, timeout: 30 * 60 * 1000, env: extra });
     if (r.code !== 0) {
       let [kind, msg] = classify(r.code, r.stderr, proto);
@@ -1547,7 +1705,7 @@ const api = {
       if (!c.repos.includes(dest)) c.repos.push(dest);
       c.repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
       c.cloneDir = parent;
-      c.history.push({ time: Date.now(), path: dest, remote: 'origin', oldUrl: '（新拉取）', newUrl: plan.url, oldSsh: '', newSsh: plan.ssh,
+      c.history.push({ time: Date.now(), path: dest, remote: 'origin', oldUrl: '（新拉取）', newUrl: plan.url, oldSsh: '', newSsh: plan.ssh, ident,
         account: acc ? `${loginOf(acc)} @ ${acc.host}` : '不指定', kind: 'clone' });
     });
     return { path: dest, state: await state() };
@@ -1654,7 +1812,7 @@ const api = {
     const c = loadConf();
     return { app: 'git-zhanghao', version: 2, exportedAt: Date.now(),
       accounts: c.accounts.map(a => ({ host: a.host, username: a.username, auth: a.auth, label: a.label, owners: a.owners,
-        sshKey: a.sshKey ? path.basename(a.sshKey) : '', ssh443: !!a.ssh443 })) };
+        sshKey: a.sshKey ? path.basename(a.sshKey) : '', ssh443: !!a.ssh443, commitName: a.commitName || '', commitEmail: a.commitEmail || '' })) };
   },
 
   async importData({ data }) {
@@ -1666,6 +1824,13 @@ const api = {
         const r = upsertAccount(c, { host: a.host, username: a.username, auth: a.auth === 'ssh' ? 'ssh' : 'token',
           sshKey, ssh443: !!a.ssh443, owners: a.owners || [a.username] });
         if (r.isNew) { r.acc.label = a.label || ''; n++; }
+        // 提交身份：只补没设过的，已经设了的以这台电脑为准
+        if (!r.acc.commitName && !r.acc.commitEmail) {
+          try {
+            const id = cleanIdent(a.commitName, a.commitEmail);
+            for (const [f, k] of IDENT_FIELDS) if (id[f]) r.acc[k] = id[f];
+          } catch (e) { /* 文件里的名字或邮箱不合格就不导入这一项 */ }
+        }
       }
     });
     return { imported: n, state: await state() };

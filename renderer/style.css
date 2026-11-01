@@ -118,6 +118,7 @@ tr:first-child td { border-top: 0; }
 .form > label { color: var(--muted); text-align: right; }
 .form .hint { grid-column: 2; font-size: 12px; color: var(--muted); margin-top: -6px; }
 .form input, .form select { width: 100%; }
+.form .sugg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: -4px; }
 .diff { font-family: var(--mono); font-size: 12px; background: var(--info-soft); border-radius: 8px; padding: 10px 12px; word-break: break-all; user-select: text; }
 .diff .old { color: var(--bad); }
 .diff .new { color: var(--ok); }

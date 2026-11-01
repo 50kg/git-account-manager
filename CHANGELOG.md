@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New / 新功能
+- **Commit identity (name and email on commits).** Which account pushes is decided by the token or key, but the name and avatar on a commit come from `user.name` / `user.email` at commit time. An account can now carry a commit name and email. Switching a project to that account writes them into the project's `.git/config` too, shown in the confirmation and undoable from the history. Switching to an account without one (or to no account) only removes what the previous account wrote; anything you set for the project yourself is kept. Only new commits are affected.
+  **提交身份（提交上的名字和邮箱）**：推送用哪个账号由 token 或密钥决定，提交上显示的名字和头像却看提交时的 `user.name` / `user.email`。现在账号可以带上提交用的名字和邮箱，项目换到这个账号时一起写进它的 `.git/config`，确认框里能看到改动，修改记录里可以撤销。换到没设提交身份的账号（或不指定账号）时，只去掉原来那个账号写进去的，你给项目单独设的不动。只影响以后的新提交。
+- When editing an account, the name and emails from the website profile are suggested. For GitHub and GitLab the private noreply address is built from the account ID, so your real email stays private.
+  编辑账号时会推荐网站资料里的名字和邮箱，GitHub、GitLab 还会按账号 id 拼出隐私邮箱（noreply），不暴露真实邮箱。
+- Each project shows who new commits will be recorded as, and whether that is set for the project or comes from the global config. It can be changed per project. A project whose identity doesn't match its account is flagged under "Needs attention" and can be fixed in one click. After changing an account's identity, you're offered to write it into the projects using it.
+  每个项目显示新提交会记成谁、是项目单独设置的还是来自全局配置，也可以单独修改。和绑定账号设置的不一致时，算进“需要处理”，一键改过来。改了账号的提交身份后，会问要不要写进正在用它的项目。
+- Cloning with an account sets its commit identity in the new project. Export / import carries the commit name and email (still no secrets).
+  用账号拉取仓库时，新项目直接带上它的提交身份。导出 / 导入账号配置时一起带上提交名字和邮箱（仍然不含密钥）。
+
 ## 1.5.0 — 2026-10-22
 
 ### Fixed / 修复

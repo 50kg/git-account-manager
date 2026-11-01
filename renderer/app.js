@@ -187,12 +187,16 @@ function switchTab(x) {
 const accById = id => S.accounts.find(a => a.id === id);
 const accName = a => a ? loginOf(a) + (a.label ? (isEn() ? ` (${a.label})` : `（${a.label}）`) : '') : '';
 const accKind = a => a.auth === 'ssh' ? 'SSH' : 'Token';
+// 提交身份写成 git 的样子：名字 <邮箱>
+const identText = (name, email) => [name, email ? `<${email}>` : ''].filter(Boolean).join(' ');
+const accIdent = a => a ? identText(a.commitName, a.commitEmail) : '';
+const identArgs = (p, a) => Object.assign({ path: p }, a.commitName ? { name: a.commitName } : {}, a.commitEmail ? { email: a.commitEmail } : {});
 const bindable = r => (r.proto === 'https' || r.proto === 'ssh') && !r.viaProxy;
 const groupOf = r => r.nhost || (r.proto === 'none' ? 'none' : 'other');
 const groupName = g => g === 'none' ? t('没有远程仓库') : g === 'other' ? t('其他') : hostName(g);
 
 function needsAttention(r) {
-  if (!r.exists || r.secretInUrl || r.tokenAccess === 'missing') return true;
+  if (!r.exists || r.secretInUrl || r.tokenAccess === 'missing' || r.identWarn) return true;
   if (r.test && r.remote && r.test.kind !== 'ok') return true;
   if (!bindable(r)) return false;
   if (r.bindStatus === 'unknown_user' || r.bindStatus === 'unknown_key') return true;
@@ -219,6 +223,10 @@ function repoChips(r) {
   if (r.tokenAccess === 'missing') c.push(chip('bad', t('token 授权里没有这个仓库'), t('这个 token 能访问的仓库列表里没有它。请 token 的主人在 GitHub 上把这个仓库加进授权')));
   else if (r.tokenAccess === 'read') c.push(chip('warn', t('token 只能读，不能推送')));
   else if (r.tokenAccess === 'push') c.push(chip('ok', t('token 可推送')));
+  if (r.identWarn) {
+    const a = accById(r.boundId);
+    c.push(chip('warn', t('提交身份和账号不一致'), t('新提交会记成 {cur}，账号 {name} 设置的是 {want}', { cur: identText(r.ident.name, r.ident.email) || t('（没设置）'), name: accName(a), want: accIdent(a) })));
+  }
   if (r.test && r.remote && !testing.has(r.path)) c.push(chip(r.test.kind === 'ok' ? 'ok' : 'bad', tr(r.test.msg), tr(r.test.detail || '') + '\n' + t('测试时间：') + fmtTime(r.test.time)));
   if (r.suggestId && r.suggestId !== r.boundId && bindable(r)) c.push(chip('acc', t('建议：{name}', { name: accName(accById(r.suggestId)) }), t('这个账号能访问该仓库')));
   return c.join('');
@@ -466,6 +474,7 @@ function repoRow(r) {
       <span>${esc(t('远程地址'))}</span><b class="mono selectable">${esc(r.url || t('（没有远程地址）'))}</b>
       <span>${esc(t('分支'))}</span><b>${r.branch ? esc(r.branch) : esc(t('（不在任何分支上）'))}${upstreamInfo}</b>
       <span>${esc(t('本地改动'))}</span><b>${r.dirty ? esc(t('{n} 个文件还没提交', { n: r.dirty })) : `<span class="muted">${esc(t('没有'))}</span>`}</b>
+      ${r.exists ? `<span>${esc(t('提交身份'))}</span><div>${identHtml(r)}</div>` : ''}
     </div>
     ${chips ? `<div class="chips" style="margin-bottom:10px">${chips}</div>` : ''}
     <div class="acts">
@@ -480,6 +489,46 @@ function repoRow(r) {
       <button class="btn sm danger" data-act="remove" data-path="${esc(r.path)}" title="${esc(t('从列表移除（不会删除文件）'))}">${esc(t('移除'))}</button>
     </div>`;
   return rowHtml('r:' + r.path, head, body);
+}
+
+// 项目的提交身份：现在新提交会记成谁、来自哪一层配置
+function identHtml(r) {
+  const id = r.ident, a = accById(r.boundId);
+  const nLocal = (id.local.name != null) + (id.local.email != null);
+  const src = nLocal === 2 ? t('这个项目单独设置的') : nLocal ? t('部分来自全局配置') : t('来自全局配置');
+  const cur = identText(id.name, id.email);
+  return (cur ? `<b class="selectable">${esc(cur)}</b> <span class="muted">· ${esc(src)}</span>` : '')
+    + (!id.name || !id.email ? ` <span class="bad-text">${esc(!cur ? t('没有设置：提交时 git 会报错') : !id.name ? t('缺名字：提交时 git 会报错') : t('缺邮箱：提交时 git 会报错或自己乱猜一个'))}</span>` : '')
+    + ` <button class="btn sm link" data-act="editIdent" data-path="${esc(r.path)}">${esc(t('修改…'))}</button>`
+    + (r.identWarn ? `<button class="btn sm primary" data-act="fixIdent" data-path="${esc(r.path)}" title="${esc(accIdent(a))}">${esc(t('改成 {name} 的', { name: loginOf(a) }))}</button>` : '');
+}
+
+async function editIdent(p) {
+  const r = S.repos.find(x => x.path === p);
+  const id = r.ident, a = accById(r.boundId);
+  const keep = v => v ? t('留空 = 用全局的 {v}', { v }) : t('留空 = 不设');
+  const html = `<p>${esc(t('新提交上记的名字和邮箱（user.name / user.email），网站按邮箱把提交算到账号上。只改这个项目的 .git/config，已经做过的提交不变；和推送用哪个账号无关。'))}</p>
+    <div class="form">
+      <label>${esc(t('名字'))}</label><input id="f-iname" value="${esc(id.local.name || '')}" placeholder="${esc(keep(id.base.name))}">
+      <label>${esc(t('邮箱'))}</label><input id="f-iemail" value="${esc(id.local.email || '')}" placeholder="${esc(keep(id.base.email))}" spellcheck="false">
+      ${accIdent(a) ? `<label></label><div class="sugg"><button class="btn sm" id="f-useacc" title="${esc(accIdent(a))}">${esc(t('填入账号 {name} 的', { name: loginOf(a) }))}</button><span class="muted">${esc(accIdent(a))}</span></div>` : ''}
+      <div class="hint">${esc(t('两项都留空 = 去掉这个项目的单独设置，用全局配置。'))}</div>
+    </div>`;
+  const data = await modal(t('「{name}」的提交身份', { name: r.name }), html, [
+    { text: t('取消'), value: null },
+    { text: t('保存'), primary: true, value: b => ({ path: p, name: b.querySelector('#f-iname').value, email: b.querySelector('#f-iemail').value }) },
+  ], back => {
+    const use = back.querySelector('#f-useacc');
+    if (use) use.onclick = () => { back.querySelector('#f-iname').value = a.commitName || ''; back.querySelector('#f-iemail').value = a.commitEmail || ''; };
+  });
+  if (!data) return;
+  try { setState(await call('setRepoIdentity', data)); toast(t('已保存')); } catch (e) { toastErr(e); }
+}
+
+async function fixIdent(p) {
+  const r = S.repos.find(x => x.path === p), a = accById(r.boundId);
+  if (!a) return;
+  try { setState(await call('setRepoIdentity', identArgs(p, a))); toast(t('「{name}」的提交身份已改成 {v}', { name: r.name, v: accIdent(a) })); } catch (e) { toastErr(e); }
 }
 
 function patchTest(p, test) {
@@ -538,18 +587,32 @@ async function addPaths(paths) {
   } catch (e) { toastErr(e); }
 }
 
+// 提交身份的改动：old / new 为 null 表示项目里不设（base 是那时全局配置里的值，记录里没有）
+function identDiff(list, base) {
+  const val = (key, v) => {
+    if (v != null) return `${key} = ${v}`;
+    const b = base && base[key.slice(5)];
+    return b ? t('{key}（项目里不设，用全局的 {v}）', { key, v: b }) : t('{key}（项目里不设）', { key });
+  };
+  return (list || []).length ? `<div class="muted" style="margin-top:8px">${esc(t('提交身份'))}</div>`
+    + list.map(x => `<div class="old">− ${esc(val(x.key, x.old))}</div><div class="new">+ ${esc(val(x.key, x.new))}</div>`).join('') : '';
+}
+const revertIdent = list => (list || []).map(x => ({ key: x.key, old: x.new, new: x.old }));
+
 function planHtml(p) {
   let h = `<div class="diff"><div class="old">− ${esc(p.oldUrl)}</div><div class="new">+ ${esc(p.newUrl)}</div>`;
   if ((p.oldSsh || '') !== (p.newSsh || '')) h += `<div class="muted" style="margin-top:8px">core.sshCommand</div><div class="old">− ${esc(p.oldSsh || t('（无）'))}</div><div class="new">+ ${esc(p.newSsh || t('（无）'))}</div>`;
-  return h + '</div>' + (p.note ? `<p class="muted">${esc(tr(p.note))}</p>` : '');
+  h += identDiff(p.ident, p.identBase);
+  return h + '</div>' + (p.note ? `<p class="muted">${esc(tr(p.note))}</p>` : '')
+    + ((p.ident || []).length ? `<p class="muted">${esc(t('提交身份跟着账号换：以后的新提交记成新的名字和邮箱，已经做过的提交不变。'))}</p>` : '');
 }
 
 async function bind(p, accountId) {
   const r = S.repos.find(x => x.path === p);
   try {
     const plan = await call('bindRepo', { path: p, accountId, dryRun: true });
-    if (plan.oldUrl === plan.newUrl && (plan.oldSsh || '') === (plan.newSsh || '')) { toast(t('没有变化')); return renderRepos(); }
-    const ok = await modal(t('切换「{name}」的账号', { name: r.name }), `<p>${esc(t('只改这个项目的远程地址配置（.git/config），不动代码。改完自动测试一次。'))}</p>${planHtml(plan)}`);
+    if (plan.oldUrl === plan.newUrl && (plan.oldSsh || '') === (plan.newSsh || '') && !plan.ident.length) { toast(t('没有变化')); return renderRepos(); }
+    const ok = await modal(t('切换「{name}」的账号', { name: r.name }), `<p>${esc(t('只改这个项目的 .git/config（远程地址和提交身份），不动代码。改完自动测试一次。'))}</p>${planHtml(plan)}`);
     if (!ok) return renderRepos();
     setState(await call('bindRepo', { path: p, accountId }));
     testRepo(p);
@@ -562,7 +625,7 @@ async function autoBind() {
     <div style="max-height:50vh;overflow:auto">${list.map((r, i) => {
       const a = accById(r.suggestId);
       return `<label class="found"><input type="checkbox" data-i="${i}" checked>
-        <span class="grow"><span class="t">${esc(r.name)}</span> → ${esc(accName(a))} · ${accKind(a)}<br><span class="ppath">${esc(r.path)}</span></span></label>`;
+        <span class="grow"><span class="t">${esc(r.name)}</span> → ${esc(accName(a))} · ${accKind(a)}${accIdent(a) ? ` <span class="muted">· ${esc(t('提交身份 {v}', { v: accIdent(a) }))}</span>` : ''}<br><span class="ppath">${esc(r.path)}</span></span></label>`;
     }).join('')}</div>`;
   const picked = await modal(t('按建议绑定账号'), html, [
     { text: t('取消'), value: null },
@@ -611,6 +674,9 @@ function accountRow(a) {
     <div class="kvgrid wide">
       <span>${esc(t('凭据'))}</span><div class="chips" style="margin:0">${cred}${a.ssh443 ? chip('', t('走 443 端口')) : ''}</div>
       <span>${esc(t('验证'))}</span><div>${verifyLine}${v && v.warn && !placeholderOf(a) ? `<div class="chip warn" style="white-space:normal;margin-top:6px">${esc(tr(v.warn))}</div>` : ''}</div>
+      <span>${esc(t('提交身份'))}<small>${esc(t('换到这个账号时写进项目'))}</small></span>
+      <div>${accIdent(a) ? `<b class="selectable">${esc(accIdent(a))}</b>` : `<span class="muted">${esc(t('没设置：换到这个账号时不改项目的提交身份'))}</span>`}
+        <button class="btn sm link" data-act="editAcc" data-id="${a.id}">${esc(accIdent(a) ? t('修改…') : t('设置…'))}</button></div>
       <span>${esc(t('负责'))}</span><b>${esc((a.owners || []).filter(o => !PLACEHOLDER_USER.test(o)).join(', '))}</b>
       ${used ? `<span>${esc(t('在用项目'))}</span><b>${S.repos.filter(r => r.boundId === a.id).map(r => esc(r.name)).join(sep())}</b>` : ''}
       ${repoChipsHtml ? `<span>${esc(t('能访问的仓库'))}<small>${esc(t('点仓库名可直接拉到本地'))}</small></span><div>${repoChipsHtml}</div>` : ''}
@@ -980,8 +1046,13 @@ async function manualAdd() {
   try { setState(await call('addManual', data)); toast(t('已添加')); } catch (e) { toastErr(e); }
 }
 
+const EMAIL_KINDS = { noreply: '隐私邮箱，推荐', commit: '网站设置的提交邮箱', primary: '主邮箱', public: '公开邮箱', other: '账号里的邮箱' };
+
 async function editAccount(id) {
   const a = accById(id);
+  const before = accIdent(a);
+  // 同一个人的另一个账号（比如同名的 token 和 SSH 账号）已经设过提交身份
+  const twins = S.accounts.filter(x => x.id !== id && normHost(x.host) === normHost(a.host) && loginOf(x).toLowerCase() === loginOf(a).toLowerCase() && accIdent(x));
   const html = `<div class="form">
     <label>${esc(t('账号'))}</label><div><b>${esc(loginOf(a))}</b> <span class="muted">· ${esc(hostName(a.host))} · ${a.auth === 'ssh' ? 'SSH' : 'Token'}${placeholderOf(a) ? ' · ' + storedAs(a) : ''}</span></div>
     <label>${esc(t('备注'))}</label><input id="f-label" value="${esc(a.label || '')}" placeholder="${esc(t('例如：公司 / 个人'))}">
@@ -991,14 +1062,58 @@ async function editAccount(id) {
       <div class="hint">${esc(t('新 token 必须属于同一个账号。'))}</div>`
       : `<label>${esc(t('密钥'))}</label><div class="ppath">${esc(a.sshKey)}</div>
       <label></label><label><input type="checkbox" id="f-443" ${a.ssh443 ? 'checked' : ''}> ${esc(t('走 443 端口'))}</label>`}
+    <label>${esc(t('提交名字'))}</label><input id="f-cname" value="${esc(a.commitName || '')}" placeholder="${esc(t('留空 = 不改项目的名字'))}">
+    <label>${esc(t('提交邮箱'))}</label><input id="f-cemail" value="${esc(a.commitEmail || '')}" placeholder="${esc(t('留空 = 不改项目的邮箱'))}" spellcheck="false">
+    <div class="hint">${esc(t('换到这个账号时，把名字和邮箱一起写进项目（user.name / user.email）。网站按邮箱把提交算到账号上，邮箱要是这个账号的。'))}</div>
+    <label></label><div class="sugg" id="f-sugg"><span class="muted"><span class="spin"></span> ${esc(t('正在查网站上的资料…'))}</span></div>
   </div>`;
   const data = await modal(t('编辑账号'), html, [
     { text: t('取消'), value: null },
     { text: t('保存'), primary: true, value: b => ({ id, label: b.querySelector('#f-label').value, owners: b.querySelector('#f-owners').value,
-      token: (b.querySelector('#f-token') || {}).value || '', ssh443: !!(b.querySelector('#f-443') || {}).checked }) },
-  ]);
+      token: (b.querySelector('#f-token') || {}).value || '', ssh443: !!(b.querySelector('#f-443') || {}).checked,
+      commitName: b.querySelector('#f-cname').value, commitEmail: b.querySelector('#f-cemail').value }) },
+  ], back => {
+    const box = back.querySelector('#f-sugg');
+    const btn = (name, email, label, tip) => `<button class="btn sm" data-name="${esc(name || '')}" data-email="${esc(email || '')}" title="${esc(tip || '')}">${esc(label)}</button>`;
+    box.onclick = e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.name) back.querySelector('#f-cname').value = b.dataset.name;
+      if (b.dataset.email) back.querySelector('#f-cemail').value = b.dataset.email;
+    };
+    call('identityHints', { id }).catch(e => ({ name: '', emails: [], error: e.message })).then(h => {
+      const items = twins.map(x => btn(x.commitName, x.commitEmail, t('同名 {kind} 账号的：{v}', { kind: accKind(x), v: accIdent(x) }), t('{name} 的另一个账号已经设置的', { name: loginOf(x) })))
+        .concat(h.name ? [btn(h.name, '', t('名字：{v}', { v: h.name }), t('网站上的名字'))] : [])
+        .concat(h.emails.map(x => btn('', x.email, x.email, t(EMAIL_KINDS[x.kind] || EMAIL_KINDS.other))));
+      box.innerHTML = items.length ? `<span class="muted">${esc(t('点一下填入：'))}</span>${items.join('')}`
+        + (h.emails.some(x => x.kind === 'noreply') ? `<div class="muted" style="flex-basis:100%;font-size:12px">${esc(t('隐私邮箱（noreply）不暴露真实邮箱，网站照样把提交算到这个账号上。'))}</div>` : '')
+        : `<span class="muted">${esc(h.error ? tr(h.error) : t('网站上没有可以推荐的名字和邮箱，自己填就行'))}</span>`;
+    });
+  });
   if (!data) return;
-  try { setState(await call('updateAccount', data)); toast(t('已保存')); } catch (e) { toastErr(e); }
+  try { setState(await call('updateAccount', data)); toast(t('已保存')); } catch (e) { return toastErr(e); }
+  // 换了提交身份：问要不要写进正在用这个账号的项目
+  const now = accById(id);
+  const stale = now && accIdent(now) && accIdent(now) !== before ? S.repos.filter(r => r.boundId === id && r.identWarn) : [];
+  if (stale.length) applyIdentDialog(now, stale);
+}
+
+async function applyIdentDialog(a, list) {
+  const html = `<p>${esc(t('有 {n} 个项目在用 {name}，提交身份还不是新设的这个。要写进去吗？', { n: list.length, name: loginOf(a) }))}</p>
+    <div class="diff"><div class="new">+ ${esc(accIdent(a))}</div></div>
+    <div style="max-height:40vh;overflow:auto;margin-top:10px">${list.map((r, i) => `<label class="found"><input type="checkbox" data-i="${i}" checked>
+      <span class="grow"><span class="t">${esc(r.name)}</span> <span class="muted">${esc(t('现在是 {v}', { v: identText(r.ident.name, r.ident.email) || t('（没设置）') }))}</span></span></label>`).join('')}</div>
+    <p class="muted">${esc(t('只影响以后的新提交，已经做过的提交不变。'))}</p>`;
+  const picked = await modal(t('更新项目的提交身份'), html, [
+    { text: t('先不改'), value: null },
+    { text: t('写进选中的项目'), primary: true, value: back => [...back.querySelectorAll('input:checked')].map(x => list[+x.dataset.i]) },
+  ]);
+  if (!picked || !picked.length) return;
+  let ok = 0;
+  for (const r of picked) {
+    try { setState(await call('setRepoIdentity', identArgs(r.path, a))); ok++; } catch (e) { toast(r.name + (isEn() ? ': ' : '：') + tr(e.message), true); }
+  }
+  toast(t('已更新 {n} 个项目的提交身份', { n: ok }));
 }
 
 async function showPublicKey(id, keyPath) {
@@ -1218,6 +1333,31 @@ function helperHistoryRow(h, i) {
   return rowHtml('h' + h.time + ':' + h.file, head, body);
 }
 
+// 项目单独改的提交身份
+function identSummary(list) {
+  const get = k => (list.find(x => x.key === 'user.' + k) || {}).new;
+  const cleared = list.filter(x => x.new == null).map(x => x.key);
+  return [identText(get('name'), get('email')), cleared.length ? t('改用全局的 {keys}', { keys: cleared.join(sep()) }) : ''].filter(Boolean).join(sep());
+}
+
+function identHistoryRow(h, i) {
+  const isUndo = h.account === '撤销';  // 主进程记录里的标记，不是界面文字
+  const head = `<span class="xic ${isUndo ? 'undo' : 'bind'}" title="${esc(isUndo ? t('撤销') : t('改提交身份'))}">${isUndo ? '↺' : '✎'}</span>
+    <span class="xmain"><b>${esc(h.path.split(/[\\/]/).pop())}</b><span class="xarrow">→</span><span>${esc(isUndo ? t('撤销上一次改动') : t('提交身份 {v}', { v: identSummary(h.ident) }))}</span></span>
+    <span class="xmeta">${clock(h.time)}</span>`;
+  const body = `
+    <div class="kvgrid">
+      <span>${esc(t('项目'))}</span><b class="selectable">${esc(h.path)}</b>
+      <span>${esc(t('时间'))}</span><b>${fmtTime(h.time)}</b>
+    </div>
+    <div class="diff">${identDiff(h.ident)}</div>
+    <div class="acts" style="margin-top:10px">
+      <button class="btn sm" data-act="undo" data-i="${i}">${esc(t('撤销这次改动'))}</button>
+      <button class="btn sm" data-act="openPath" data-path="${esc(h.path)}">${esc(t('打开文件夹'))}</button>
+    </div>`;
+  return rowHtml('h' + h.time + ':' + h.path, head, body);
+}
+
 function historyRows() {
   if (!S.history.length) return `<div class="xempty">${esc(t('还没有修改过。在项目页给项目换账号后，这里会记下每一次改动，随时可以撤销。'))}</div>`;
   let out = '', lastDay = '';
@@ -1225,6 +1365,7 @@ function historyRows() {
     const day = dayLabel(h.time);
     if (day !== lastDay) { out += `<div class="xday">${esc(day)}</div>`; lastDay = day; }
     if (h.kind === 'helper') { out += helperHistoryRow(h, i); return; }
+    if (h.kind === 'ident') { out += identHistoryRow(h, i); return; }
     const name = h.path.split(/[\\/]/).pop();
     // 主进程记录里的 '撤销' / '不指定' 是数据，不是界面文字
     const isUndo = h.account === '撤销', isClone = h.kind === 'clone';
@@ -1241,7 +1382,7 @@ function historyRows() {
         <span>${esc(t('远程'))}</span><b>${esc(h.remote || 'origin')}</b>
       </div>
       <div class="diff"><div class="old">− ${esc(tr(h.oldUrl))}</div><div class="new">+ ${esc(h.newUrl)}</div>
-        ${sshChanged ? `<div class="muted" style="margin-top:8px">core.sshCommand</div><div class="old">− ${esc(h.oldSsh || t('（无）'))}</div><div class="new">+ ${esc(h.newSsh || t('（无）'))}</div>` : ''}</div>
+        ${sshChanged ? `<div class="muted" style="margin-top:8px">core.sshCommand</div><div class="old">− ${esc(h.oldSsh || t('（无）'))}</div><div class="new">+ ${esc(h.newSsh || t('（无）'))}</div>` : ''}${identDiff(h.ident)}</div>
       <div class="acts" style="margin-top:10px">
         ${isClone ? '' : `<button class="btn sm" data-act="undo" data-i="${i}">${esc(t('撤销这次改动'))}</button>`}
         <button class="btn sm" data-act="openPath" data-path="${esc(h.path)}">${esc(t('打开文件夹'))}</button>
@@ -1381,7 +1522,8 @@ async function undo(i) {
   const ok = h.kind === 'helper'
     ? await modal(t('撤销修改'), `<p>${t('把下面这几行加回 <b>{file}</b>，{site} 的 git 认证会重新由 {tool}接管：', { file: esc(h.file), site: esc(hostName(h.host)), tool: esc(toolName(h.tool)) })}</p>
         <div class="diff">${h.lines.map(l => l.values.map(v => `<div class="new">+ ${esc(l.key)} = ${esc(v)}</div>`).join('')).join('')}</div>`)
-    : await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的远程地址改回：', { path: esc(h.path) })}</p><div class="diff">${esc(h.oldUrl)}</div>`);
+    : h.kind === 'ident' ? await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的提交身份改回：', { path: esc(h.path) })}</p><div class="diff">${identDiff(revertIdent(h.ident))}</div>`)
+    : await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的远程地址改回：', { path: esc(h.path) })}</p><div class="diff">${esc(h.oldUrl)}${identDiff(revertIdent(h.ident))}</div>`);
   if (!ok) return;
   try { setState(await call('undo', { index: i })); toast(t('已撤销')); } catch (e) { toastErr(e); }
 }
@@ -1427,6 +1569,8 @@ const ACTIONS = {
   reveal: d => revealSecret(d.id),
   pubkey: d => showPublicKey(d.id),
   editAcc: d => editAccount(d.id),
+  editIdent: d => editIdent(d.path),
+  fixIdent: d => fixIdent(d.path),
   delAcc: d => deleteAccount(d.id),
   undo: d => undo(+d.i),
   checkUpdate: () => checkUpdate(true),

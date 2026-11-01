@@ -45,6 +45,7 @@ That happens because the system credential store (macOS Keychain / Windows Crede
 
 - HTTPS projects get the username written into the remote URL (`https://alice@github.com/org/repo.git`), so each account keeps its own credential.
 - SSH projects get a dedicated key via `core.sshCommand`, no `~/.ssh/config` juggling.
+- Commit identity: an account can carry the name and email to commit with (`user.name` / `user.email`). They're written to the project along with the account, so commits show up under that account.
 
 It only edits each project's `.git/config`. Your code is never touched, and every change can be undone.
 
@@ -54,6 +55,7 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - Drag folders into the window (or a parent folder — repos inside are found automatically).
 - Pick an account per project from a picker that tells you whether each account **can access that repository** (push / read-only / not authorized).
 - "Apply suggestions" binds every project to the right account in one click.
+- **Commit identity**: see who new commits in each project will be recorded as (set for the project or taken from the global config) and change it per project. When it doesn't match the bound account, you're told and can fix it in one click.
 - See at a glance: uncommitted changes, unpushed commits, new commits on the remote. **One-click pull** (fast-forward only — it refuses and explains when branches diverge or local changes would be overwritten).
 - Clickable status counters to filter: needs attention / updates available / local changes / unreachable.
 - Open in Finder / Explorer, Terminal, **Sourcetree**, or the repository web page.
@@ -65,6 +67,7 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - **Generate an SSH key** and register the public key on GitHub / Gitee / GitLab through the API — no copy-paste.
 - **Clone** any repository an account can access, straight into the project list, already bound to that account.
 - View token / password / public key on demand.
+- Give an account a **commit name and email**. Suggestions come from the website profile; for GitHub / GitLab the private noreply address is filled in for you, so your real email stays private.
 - **GitHub CLI (gh)**: `gh auth setup-git` makes gh take over git sign-in for github.com (it only hands out the one signed-in account). The app points this out and can hand it back to the system credential store in one click (undoable). gh's own sign-ins can be viewed, switched, signed in, signed out and imported here too.
 
 **Safe by design**
