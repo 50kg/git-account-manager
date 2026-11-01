@@ -348,7 +348,7 @@ const FILTERS = {
 function visibleRepos() {
   const q = F.q.toLowerCase();
   return S.repos.filter(r => (FILTERS[F.filter] || FILTERS.all)(r) &&
-    (!q || (r.name + ' ' + r.path + ' ' + r.url).toLowerCase().includes(q)));
+    (!q || (r.name + ' ' + r.path + ' ' + r.url + ' ' + r.group).toLowerCase().includes(q)));
 }
 const appIcon = k => ICONS[k] ? `<img class="app-ic" src="${ICONS[k]}" alt="">` : '';
 
@@ -397,6 +397,52 @@ function helperNote(onlyRepos) {
   return notes.join('');
 }
 
+// 项目列表按站点分（默认），或者按用户自己建的分组分（公司 / 个人…）。选哪种只记在这台电脑的界面里
+function repoView() {
+  let v = '';
+  try { v = localStorage.getItem('gz-repo-view') || ''; } catch (e) { /* 存不了就用默认 */ }
+  return v === 'group' || v === 'host' ? v : (S.groups || []).length ? 'group' : 'host';
+}
+function setRepoView(v) {
+  try { localStorage.setItem('gz-repo-view', v); } catch (e) { /* 存不了下次就用默认 */ }
+  renderRepos();
+}
+
+function hostSections(list) {
+  const groups = {};
+  list.forEach(r => { (groups[groupOf(r)] = groups[groupOf(r)] || []).push(r); });
+  const rank = g => { const i = Object.keys(HOST_NAMES).indexOf(g); return i >= 0 ? i : g.includes('.') ? 50 : 99; };
+  return Object.keys(groups).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map(g => `
+    <div class="acc-group">
+      <div class="acc-group-head">${g.includes('.') ? `<span class="gh-ic">${siteIcon(g)}</span>` : '<span class="dot"></span>'}<b>${esc(groupName(g))}</b><span class="muted">${esc(t('{n} 个项目', { n: groups[g].length }))}</span></div>
+      <div class="xlist">${groups[g].map(r => repoRow(r)).join('')}</div>
+    </div>`).join('');
+}
+
+// 按分组：用户的分组按顺序排，最后是“未分组”。搜索 / 筛选时不显示没有匹配项目的分组
+function groupSections(list) {
+  const filtering = !!F.q || F.filter !== 'all';
+  const sections = (S.groups || []).map(g => ({ name: g, list: list.filter(r => r.group === g) })).filter(s => s.list.length || !filtering);
+  const rest = list.filter(r => !r.group);
+  if (rest.length) sections.push({ name: '', list: rest });
+  if (!sections.length) return `<div class="empty">${esc(t('没有符合条件的项目'))}</div>`;
+  const last = (S.groups || []).length - 1;
+  return sections.map(s => {
+    const i = S.groups.indexOf(s.name), d = `data-g="${esc(s.name)}"`;
+    const acts = s.name ? `<span class="grp-acts">
+        <button class="btn sm link" data-act="grpAdd" ${d}>${esc(t('添加项目…'))}</button>
+        <button class="btn sm link" data-act="grpRename" ${d}>${esc(t('重命名'))}</button>
+        <button class="btn sm link" data-act="grpMove" data-delta="-1" ${d} ${i === 0 ? 'disabled' : ''} title="${esc(t('上移'))}">↑</button>
+        <button class="btn sm link" data-act="grpMove" data-delta="1" ${d} ${i === last ? 'disabled' : ''} title="${esc(t('下移'))}">↓</button>
+        <button class="btn sm link danger" data-act="grpDel" ${d}>${esc(t('删除分组'))}</button></span>` : '';
+    return `<div class="acc-group">
+      <div class="acc-group-head"><span class="dot${s.name ? ' grp' : ''}"></span><b>${esc(s.name || t('未分组'))}</b><span class="muted">${esc(t('{n} 个项目', { n: s.list.length }))}</span>${acts}</div>
+      <div class="xlist">${s.list.length ? s.list.map(r => repoRow(r)).join('')
+        : `<div class="xempty">${esc(t('这个分组还没有项目，点右上角的“添加项目…”放进来。'))}</div>`}</div>
+    </div>`;
+  }).join('');
+}
+
 function renderRepos() {
   const el = $('#tab-repos');
   const repos = S.repos;
@@ -412,10 +458,7 @@ function renderRepos() {
     return;
   }
   const list = visibleRepos();
-  const groups = {};
-  list.forEach(r => { (groups[groupOf(r)] = groups[groupOf(r)] || []).push(r); });
-  const rank = g => { const i = Object.keys(HOST_NAMES).indexOf(g); return i >= 0 ? i : g.includes('.') ? 50 : 99; };
-  const order = Object.keys(groups).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  const view = repoView();
   el.innerHTML = head + helperNote(true) + ideNote() + globalIdentNote() + `
     <div class="stats">
       ${[['all', repos.length, t('全部项目'), ''], ['attention', repos.filter(needsAttention).length, t('需要处理'), 'warn'],
@@ -425,13 +468,11 @@ function renderRepos() {
     </div>
     <div class="toolbar">
       <input id="q" placeholder="${esc(t('搜索项目名 / 路径 / 地址（{key}）', { key: IS_MAC ? '⌘F' : 'Ctrl+F' }))}" value="${esc(F.q)}" style="flex:1;min-width:200px">
-      <span class="muted">${esc(t('也可以直接把文件夹拖进窗口'))}</span>
+      <div class="seg" title="${esc(t('分组只是方便查看，不会改动项目'))}">${[['host', t('按站点')], ['group', t('按分组')]].map(([k, label]) =>
+        `<button class="${view === k ? 'on' : ''}" data-act="repoView" data-v="${k}">${esc(label)}</button>`).join('')}</div>
+      ${view === 'group' ? `<button class="btn sm" data-act="grpNew">${esc(t('新建分组…'))}</button>` : `<span class="muted">${esc(t('也可以直接把文件夹拖进窗口'))}</span>`}
     </div>
-    ${!list.length ? `<div class="empty">${esc(t('没有符合条件的项目'))}</div>` : order.map(g => `
-      <div class="acc-group">
-        <div class="acc-group-head">${g.includes('.') ? `<span class="gh-ic">${siteIcon(g)}</span>` : '<span class="dot"></span>'}<b>${esc(groupName(g))}</b><span class="muted">${esc(t('{n} 个项目', { n: groups[g].length }))}</span></div>
-        <div class="xlist">${groups[g].map(repoRow).join('')}</div>
-      </div>`).join('')}`;
+    ${view === 'group' ? groupSections(list) : !list.length ? `<div class="empty">${esc(t('没有符合条件的项目'))}</div>` : hostSections(list)}`;
   const qi = $('#q');
   qi.oninput = () => {
     F.q = qi.value;
@@ -457,10 +498,13 @@ function repoRow(r) {
     : r.behind > 0 ? `<button class="xstate-btn" data-act="pull" data-path="${esc(r.path)}" title="${esc(t('远程有 {n} 个新提交，点击拉取（只做快进，不会覆盖你的改动）', { n: r.behind }))}">↓ ${esc(t('拉取 {n}', { n: r.behind }))}</button>`
     : ok ? `<span class="xstate ok" title="${esc(t('检查于 {time}', { time: fmtTime(r.test.time) }))}">✓ ${esc(r.upstream ? t('已是最新') : t('可连接'))}</span>`
     : `<span class="xstate muted">${esc(t('未检查'))}</span>`;
+  // 按分组显示时，行里看不出是哪个站点：地址前面带上站点名；按站点显示时反过来带上分组
+  const byGroup = repoView() === 'group';
+  const where = r.owner ? (byGroup && r.nhost ? hostName(r.nhost) + ' · ' : '') + r.owner + '/' + r.repoName : shortPath(r.path);
   const head = `<span class="repo-ic${ok ? ' ok' : ''}">${REPO_ICON}</span>
-    <span class="xmain"><b class="selectable">${esc(r.name)}</b>${r.branch ? `<span class="chip">${esc(r.branch)}</span>` : ''}
-      <span class="muted" title="${esc(r.path)}">${esc(r.owner ? r.owner + '/' + r.repoName : shortPath(r.path))}</span>
-      ${r.dirty ? `<span class="pill dirty" title="${esc(t('有 {n} 个文件改动还没提交', { n: r.dirty }))}">● ${esc(t('{n} 改动', { n: r.dirty }))}</span>` : ''}${r.ahead ? `<span class="pill ahead" title="${esc(t('本地有 {n} 个提交还没推送', { n: r.ahead }))}">↑ ${esc(t('{n} 未推送', { n: r.ahead }))}</span>` : ''}</span>
+    <span class="xmain repo-main"><span class="xline"><b class="selectable">${esc(r.name)}</b>${r.branch ? `<span class="chip">${esc(r.branch)}</span>` : ''}${!byGroup && r.group ? `<span class="chip grp" title="${esc(t('分组'))}">${esc(r.group)}</span>` : ''}
+      <span class="muted" title="${esc(r.path)}">${esc(where)}</span>
+      ${r.dirty ? `<span class="pill dirty" title="${esc(t('有 {n} 个文件改动还没提交', { n: r.dirty }))}">● ${esc(t('{n} 改动', { n: r.dirty }))}</span>` : ''}${r.ahead ? `<span class="pill ahead" title="${esc(t('本地有 {n} 个提交还没推送', { n: r.ahead }))}">↑ ${esc(t('{n} 未推送', { n: r.ahead }))}</span>` : ''}</span>${identLine(r)}</span>
     ${needsAttention(r) ? `<span class="attn-badge" title="${esc(t('点开看橙色/红色的标签'))}">${esc(t('需处理'))}</span>` : ''}
     <span class="mini-badge t-${type}">${esc(badge)}</span>
     <span class="xpick">${bindable(r) ? accountPicker(r, true) : '<span class="muted">—</span>'}</span>
@@ -486,6 +530,7 @@ function repoRow(r) {
       <button class="btn sm icon-btn" data-act="terminal" data-path="${esc(r.path)}" title="${esc(t('在这个目录打开终端'))}">${appIcon('terminal')}${esc(t('终端'))}</button>
       ${S.sys.sourcetree ? `<button class="btn sm icon-btn" data-act="sourcetree" data-path="${esc(r.path)}" title="${esc(t('在 Sourcetree 里打开这个项目'))}">${appIcon('sourcetree')}Sourcetree</button>` : ''}
       ${bindable(r) && r.owner ? `<a class="btn sm" href="${esc(`https://${r.nhost}/${r.owner}/${r.repoName}`)}" target="_blank" rel="noopener" title="${esc(t('在浏览器打开这个仓库的网页'))}">${esc(t('网页'))} ↗</a>` : ''}
+      <button class="btn sm" data-act="setGroup" data-path="${esc(r.path)}" title="${esc(t('分组只是方便查看，不会改动项目'))}">${esc(r.group ? t('分组：{g}', { g: r.group }) : t('放进分组…'))}</button>
       <span class="spacer"></span>
       <button class="btn sm danger" data-act="remove" data-path="${esc(r.path)}" title="${esc(t('从列表移除（不会删除文件）'))}">${esc(t('移除'))}</button>
     </div>`;
@@ -493,16 +538,38 @@ function repoRow(r) {
 }
 
 // 项目的提交身份：现在新提交会记成谁、来自哪一层配置
+const identSource = id => {
+  const nLocal = (id.local.name != null) + (id.local.email != null);
+  return nLocal === 2 ? t('这个项目单独设置的') : nLocal ? t('部分来自全局配置') : t('来自全局配置');
+};
+
+// 提交身份的问题：[样式, 说明]；bad = 提交会失败或关联不到账号，warn = 和绑定的账号对不上
+function identIssue(r) {
+  const id = r.ident;
+  if (!id.name || !id.email) return ['bad', !id.name && !id.email ? t('没有设置：提交时 git 会报错') : !id.name ? t('缺名字：提交时 git 会报错') : t('缺邮箱：提交时 git 会报错或自己乱猜一个')];
+  if (!EMAIL_OK(id.email)) return ['bad', t('邮箱无效：提交关联不到网站账号')];
+  if (r.identWarn) return ['warn', t('提交身份和账号不一致')];
+  return ['', ''];
+}
+
 function identHtml(r) {
   const id = r.ident, a = accById(r.boundId);
-  const nLocal = (id.local.name != null) + (id.local.email != null);
-  const src = nLocal === 2 ? t('这个项目单独设置的') : nLocal ? t('部分来自全局配置') : t('来自全局配置');
   const cur = identText(id.name, id.email);
-  return (cur ? `<b class="selectable">${esc(cur)}</b> <span class="muted">· ${esc(src)}</span>` : '')
-    + (!id.name || !id.email ? ` <span class="bad-text">${esc(!cur ? t('没有设置：提交时 git 会报错') : !id.name ? t('缺名字：提交时 git 会报错') : t('缺邮箱：提交时 git 会报错或自己乱猜一个'))}</span>`
-      : !EMAIL_OK(id.email) ? ` <span class="bad-text">${esc(t('邮箱无效：提交关联不到网站账号'))}</span>` : '')
+  const [level, msg] = identIssue(r);
+  return (cur ? `<b class="selectable">${esc(cur)}</b> <span class="muted">· ${esc(identSource(id))}</span>` : '')
+    + (level === 'bad' ? ` <span class="bad-text">${esc(msg)}</span>` : '')
     + ` <button class="btn sm link" data-act="editIdent" data-path="${esc(r.path)}">${esc(t('修改…'))}</button>`
     + (r.identWarn ? `<button class="btn sm primary" data-act="fixIdent" data-path="${esc(r.path)}" title="${esc(accIdent(a))}">${esc(t('改成 {name} 的', { name: loginOf(a) }))}</button>` : '');
+}
+
+// 项目行上（不用展开）第二行显示的提交身份：谁、来自哪里，有问题时标红 / 标橙
+const PERSON_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.749.749 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .749.749 0 1 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/></svg>';
+function identLine(r) {
+  if (!r.exists) return '';
+  const cur = identText(r.ident.name, r.ident.email);
+  const [level, msg] = identIssue(r);
+  const text = [cur || t('没设置提交身份'), cur ? identSource(r.ident) : '', msg].filter(Boolean).join(' · ');
+  return `<span class="ident-line ${level}" title="${esc(t('提交身份：{v}', { v: text }))}">${PERSON_ICON}${esc(text)}</span>`;
 }
 
 async function editIdent(p) {
@@ -514,7 +581,7 @@ async function editIdent(p) {
       <label>${esc(t('名字'))}</label><input id="f-iname" value="${esc(id.local.name || '')}" placeholder="${esc(keep(id.base.name))}">
       <label>${esc(t('邮箱'))}</label><input id="f-iemail" value="${esc(id.local.email || '')}" placeholder="${esc(keep(id.base.email))}" spellcheck="false">
       ${accIdent(a) ? `<label></label><div class="sugg"><button class="btn sm" id="f-useacc" title="${esc(accIdent(a))}">${esc(t('填入账号 {name} 的', { name: loginOf(a) }))}</button><span class="muted">${esc(accIdent(a))}</span></div>` : ''}
-      <div class="hint">${esc(t('两项都留空 = 去掉这个项目的单独设置，用全局配置。全局配置在“记录与设置 → 全局提交身份”里改。'))}</div>
+      <div class="hint">${esc(t('两项都留空 = 去掉这个项目的单独设置，用全局配置。全局配置在“账号”页的“全局提交身份”里改。'))}</div>
     </div>`;
   const data = await modal(t('「{name}」的提交身份', { name: r.name }), html, [
     { text: t('取消'), value: null },
@@ -585,6 +652,88 @@ async function fixIdent(p) {
   const r = S.repos.find(x => x.path === p), a = accById(r.boundId);
   if (!a) return;
   try { setState(await call('setRepoIdentity', identArgs(p, a))); toast(t('「{name}」的提交身份已改成 {v}', { name: r.name, v: accIdent(a) })); } catch (e) { toastErr(e); }
+}
+
+// ================================================================ 项目分组（纯展示，只记在本工具里）
+
+function groupNamePrompt(title, value, hint) {
+  return modal(title, `<div class="form"><label>${esc(t('分组名'))}</label><input id="f-grpname" value="${esc(value || '')}" placeholder="${esc(t('例如：公司 / 个人'))}">
+    ${hint ? `<div class="hint">${esc(hint)}</div>` : ''}</div>`, [
+    { text: t('取消'), value: null },
+    { text: t('确定'), primary: true, value: b => {
+      const v = b.querySelector('#f-grpname').value.trim().replace(/\s+/g, ' ');
+      if (!v) { toast(t('请填写分组名'), true); return undefined; }
+      return v;
+    } },
+  ], back => {
+    const input = back.querySelector('#f-grpname');
+    input.select();
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') back.querySelector('.btn.primary').click(); });
+  });
+}
+
+async function setGroupDialog(p) {
+  const r = S.repos.find(x => x.path === p);
+  const opt = (v, label) => `<label class="found"><input type="radio" name="grp" value="${esc(v)}" ${r.group === v ? 'checked' : ''}><span class="grow">${esc(label)}</span></label>`;
+  const html = `<p class="muted">${esc(t('分组只是方便在列表里归类查看，不会改动项目。'))}</p>
+    <div style="max-height:45vh;overflow:auto">${(S.groups || []).map(g => opt(g, g)).join('')}${opt('', t('未分组'))}
+      <label class="found"><input type="radio" name="grp" value="" id="f-grp-new-r"><span class="grow" style="display:flex;gap:8px;align-items:center">${esc(t('新分组：'))}
+        <input id="f-grp-new" placeholder="${esc(t('例如：公司 / 个人'))}" style="flex:1"></span></label></div>`;
+  const picked = await modal(t('「{name}」放进哪个分组', { name: r.name }), html, [
+    { text: t('取消'), value: null },
+    { text: t('确定'), primary: true, value: b => {
+      const sel = b.querySelector('input[name=grp]:checked');
+      if (!sel) return undefined;
+      if (sel.id !== 'f-grp-new-r') return { group: sel.value };
+      const v = b.querySelector('#f-grp-new').value.trim().replace(/\s+/g, ' ');
+      if (!v) { toast(t('请填写分组名'), true); return undefined; }
+      return { group: v };
+    } },
+  ], back => {
+    const input = back.querySelector('#f-grp-new');
+    input.onfocus = input.oninput = () => { back.querySelector('#f-grp-new-r').checked = true; };
+  });
+  if (!picked || picked.group === r.group) return;
+  try {
+    setState(await call('setRepoGroup', { paths: [p], group: picked.group }));
+    toast(picked.group ? t('已把「{name}」放进「{g}」', { name: r.name, g: picked.group }) : t('已把「{name}」移出分组', { name: r.name }));
+  } catch (e) { toastErr(e); }
+}
+
+async function addToGroupDialog(g) {
+  const list = S.repos.filter(r => r.group !== g);
+  if (!list.length) return toast(t('所有项目都已经在「{g}」里了', { g }));
+  const html = `<p>${esc(t('勾选要放进「{g}」的项目。已经在别的分组里的会移过来。', { g }))}</p>
+    <div style="max-height:50vh;overflow:auto">${list.map((r, i) => `<label class="found"><input type="checkbox" data-i="${i}">
+      <span class="grow"><span class="t">${esc(r.name)}</span> <span class="muted">${esc(r.group ? t('现在在「{g}」', { g: r.group }) : t('未分组'))}</span><br><span class="ppath">${esc(r.path)}</span></span></label>`).join('')}</div>`;
+  const picked = await modal(t('添加项目到「{g}」', { g }), html, [
+    { text: t('取消'), value: null },
+    { text: t('添加选中的项目'), primary: true, value: back => [...back.querySelectorAll('input:checked')].map(x => list[+x.dataset.i].path) },
+  ]);
+  if (!picked || !picked.length) return;
+  try { setState(await call('setRepoGroup', { paths: picked, group: g })); toast(t('已把 {n} 个项目放进「{g}」', { n: picked.length, g })); } catch (e) { toastErr(e); }
+}
+
+async function newGroupDialog() {
+  const name = await groupNamePrompt(t('新建分组'), '', t('比如按公司 / 个人分。建好后可以马上勾选要放进去的项目。'));
+  if (!name) return;
+  try { setState(await call('addGroup', { name })); } catch (e) { return toastErr(e); }
+  setRepoView('group');
+  addToGroupDialog(name);
+}
+
+async function renameGroupDialog(g) {
+  const to = await groupNamePrompt(t('重命名分组「{g}」', { g }), g, t('改成已有的分组名，会把两个分组合并。'));
+  if (!to || to === g) return;
+  try { setState(await call('renameGroup', { from: g, to })); } catch (e) { toastErr(e); }
+}
+
+async function deleteGroupDialog(g) {
+  const n = S.repos.filter(r => r.group === g).length;
+  const ok = await modal(t('删除分组「{g}」', { g }), `<p>${esc(n ? t('里面的 {n} 个项目会变成“未分组”，项目本身不受影响。', { n }) : t('这个分组里没有项目。'))}</p>`,
+    [{ text: t('取消'), value: null }, { text: t('删除分组'), danger: true, value: true }]);
+  if (!ok) return;
+  try { setState(await call('deleteGroup', { name: g })); } catch (e) { toastErr(e); }
 }
 
 function patchTest(p, test) {
@@ -911,6 +1060,25 @@ async function releaseDialog(host) {
   } catch (e) { toastErr(e); }
 }
 
+// 全局配置里的提交身份：没单独设置的项目都用它
+function globalIdentCard() {
+  const g = S.sys.ident || {};
+  const n = S.repos.filter(r => r.exists && (r.ident.local.name == null || r.ident.local.email == null)).length;
+  const none = `<span class="muted">${esc(t('（没设置）'))}</span>`;
+  // 有项目真的受影响才标红（身份可能是按目录引入的，全局配置本身没写）
+  const bad = g.problem && S.repos.some(usesBadGlobal) ? 'bad' : '';
+  return `<div class="card">
+    <h2>${esc(t('全局提交身份'))} ${g.problem ? chip(bad, g.problem === 'email' ? t('邮箱无效') : t('没设置全')) : ''}
+      <button class="btn sm" data-act="editGlobalIdent" style="float:right">${esc(t('修改…'))}</button></h2>
+    <p>${esc(t('没单独设置提交身份的项目，新提交都记成这个名字和邮箱（列表里有 {n} 个项目至少有一项用的是它）。账号设置的提交身份会在换账号时写进项目，优先于这里。', { n }))}</p>
+    <div class="kvgrid" style="margin-bottom:0">
+      <span>${esc(t('名字'))}</span><b class="selectable">${g.name ? esc(g.name) : none}</b>
+      <span>${esc(t('邮箱'))}</span><b class="selectable">${g.email ? esc(g.email) : none}${g.problem === 'email' ? ' ' + chip('bad', t('不是有效邮箱')) : ''}</b>
+      <span>${esc(t('文件'))}</span><b class="selectable">${esc(g.file || '')}</b>
+    </div>
+  </div>`;
+}
+
 function renderAccounts() {
   const el = $('#tab-accounts');
   const tokenVal = ($('#tok') || {}).value || '';
@@ -935,6 +1103,7 @@ function renderAccounts() {
         <button class="btn link" data-act="manual">${esc(t('其它站点 / 手动添加…'))}</button>
       </div>
     </div>
+    ${globalIdentCard()}
     ${localKeysHtml()}
     ${S.accounts.length ? accountGroups() : `<div class="empty">${esc(t('还没有账号'))}</div>`}
     ${ghCardHtml()}
@@ -1458,24 +1627,6 @@ function historyRows() {
   return out;
 }
 
-// 全局配置里的提交身份：没单独设置的项目都用它
-function globalIdentRow() {
-  const g = S.sys.ident || {};
-  const n = S.repos.filter(r => r.exists && (r.ident.local.name == null || r.ident.local.email == null)).length;
-  const none = `<span class="muted">${esc(t('（没设置）'))}</span>`;
-  // 有项目真的受影响才标红（身份可能是按目录引入的，全局配置本身没写）
-  const bad = g.problem && S.repos.some(usesBadGlobal) ? 'bad' : '';
-  return rowHtml('gident',
-    `<span class="xic set">✎</span><span class="xmain"><b>${esc(t('全局提交身份'))}</b><span class="muted">${esc(identText(g.name, g.email) || t('（没设置）'))}</span></span>${g.problem ? chip(bad, g.problem === 'email' ? t('邮箱无效') : t('没设置全')) : ''}`,
-    `<div class="kvgrid">
-       <span>${esc(t('名字'))}</span><b class="selectable">${g.name ? esc(g.name) : none}</b>
-       <span>${esc(t('邮箱'))}</span><b class="selectable">${g.email ? esc(g.email) : none}${g.problem === 'email' ? ' ' + chip('bad', t('不是有效邮箱')) : ''}</b>
-       <span>${esc(t('文件'))}</span><b class="selectable">${esc(g.file || '')}</b>
-     </div>
-     <p class="muted" style="margin:0 0 10px">${esc(t('没单独设置提交身份的项目，新提交都记成这个名字和邮箱（列表里有 {n} 个项目至少有一项用的是它）。网站按邮箱把提交算到账号上。', { n }))}</p>
-     <div class="acts"><button class="btn" data-act="editGlobalIdent">${esc(t('修改…'))}</button></div>`);
-}
-
 function renderRecords() {
   const s = S.sys;
   const store = storeName();
@@ -1489,7 +1640,6 @@ function renderRecords() {
       `<div class="seg" id="lang-seg">${[['zh', '中文'], ['en', 'English']].map(([k, label]) => `<button class="${window.I18N.getLang() === k ? 'on' : ''}" data-act="lang" data-l="${k}">${label}</button>`).join('')}</div>
        <p class="muted" style="margin:8px 0 0">${esc(t('默认跟随系统语言。也可以在左下角切换。'))}</p>`),
     versionRow(),
-    globalIdentRow(),
     rowHtml('sync',
       `<span class="xic set">⇅</span><span class="xmain"><b>${esc(t('Mac / Windows 同步账号'))}</b><span class="muted">${esc(t('导出 / 导入账号配置，不含 token'))}</span></span>`,
       `<p class="muted" style="margin-top:0">${t('导出的文件只有账号信息（网站、用户名、备注、密钥文件名），<b>不含 token 和密钥</b>。在另一台电脑导入后，到账号页把 token 粘贴一次即可；SSH 密钥需要自己拷过去，或在那台电脑上重新生成。')}</p>
@@ -1628,6 +1778,13 @@ const ACTIONS = {
   testAll: async () => { const ps = visibleRepos().filter(r => r.remote).map(r => r.path); const bad = await testMany(ps); toast(t('测试完成：{ok} 个正常，{bad} 个失败', { ok: ps.length - bad, bad }), bad > 0); },
   autoBind,
   filter: d => { F.filter = F.filter === d.f ? 'all' : d.f; renderRepos(); },
+  repoView: d => setRepoView(d.v),
+  setGroup: d => setGroupDialog(d.path),
+  grpNew: () => newGroupDialog(),
+  grpAdd: d => addToGroupDialog(d.g),
+  grpRename: d => renameGroupDialog(d.g),
+  grpMove: async d => { try { setState(await call('moveGroup', { name: d.g, delta: +d.delta })); } catch (e) { toastErr(e); } },
+  grpDel: d => deleteGroupDialog(d.g),
   pull: d => pullRepo(d.path),
   terminal: d => call('openTerminal', { path: d.path }).catch(toastErr),
   openPicker: (d, el) => openPicker(d.path, el),

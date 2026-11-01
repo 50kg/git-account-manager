@@ -55,7 +55,8 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - Drag folders into the window (or a parent folder — repos inside are found automatically).
 - Pick an account per project from a picker that tells you whether each account **can access that repository** (push / read-only / not authorized).
 - "Apply suggestions" binds every project to the right account in one click.
-- **Commit identity**: see who new commits in each project will be recorded as (set for the project or taken from the global config) and change it per project. When it doesn't match the bound account, you're told and can fix it in one click. The global commit identity can be changed under *History & Settings* too, and you're warned when it's incomplete or the email is invalid.
+- **Commit identity**: every project row shows who new commits will be recorded as (set for the project or taken from the global config), and you can change it per project. When it doesn't match the bound account, you're told and can fix it in one click.
+- **Project groups**: sort projects into your own groups (work, personal…) and view the list by host or by group. Groups only organize the list; projects aren't changed.
 - See at a glance: uncommitted changes, unpushed commits, new commits on the remote. **One-click pull** (fast-forward only — it refuses and explains when branches diverge or local changes would be overwritten).
 - Clickable status counters to filter: needs attention / updates available / local changes / unreachable.
 - Open in Finder / Explorer, Terminal, **Sourcetree**, or the repository web page.
@@ -68,6 +69,7 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - **Clone** any repository an account can access, straight into the project list, already bound to that account.
 - View token / password / public key on demand.
 - Give an account a **commit name and email**. Suggestions come from the website profile; for GitHub / GitLab the private noreply address is filled in for you, so your real email stays private.
+- The **global commit identity** (used by projects without their own) is managed here too, with a warning when it's incomplete or the email is invalid.
 - **GitHub CLI (gh)**: `gh auth setup-git` makes gh take over git sign-in for github.com (it only hands out the one signed-in account). The app points this out and can hand it back to the system credential store in one click (undoable). gh's own sign-ins can be viewed, switched, signed in, signed out and imported here too.
 
 **Safe by design**

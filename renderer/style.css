@@ -120,6 +120,19 @@ tr:first-child td { border-top: 0; }
 .form input, .form select { width: 100%; }
 .form .sugg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: -4px; }
 .sugg .btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+/* 项目行上的提交身份、分组 */
+.xmain.repo-main { flex-direction: column; align-items: stretch; gap: 1px; }
+.repo-main .xline { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.ident-line { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ident-line svg { vertical-align: -2px; margin-right: 4px; }
+.ident-line.warn { color: var(--warn); }
+.ident-line.bad { color: var(--bad); }
+.chip.grp { background: var(--accent-soft); color: var(--accent); }
+.acc-group:not(.type-https):not(.type-ssh) > .acc-group-head .dot.grp { background: var(--accent); }
+.grp-acts { margin-left: auto; display: inline-flex; gap: 2px; align-items: center; }
+.grp-acts .btn.link { padding: 2px 6px; font-size: 12px; }
+.grp-acts .btn.danger { color: var(--bad); }
 .diff { font-family: var(--mono); font-size: 12px; background: var(--info-soft); border-radius: 8px; padding: 10px 12px; word-break: break-all; user-select: text; }
 .diff .old { color: var(--bad); }
 .diff .new { color: var(--ok); }

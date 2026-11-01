@@ -49,6 +49,8 @@ function loadConf() {
   c.repos = c.repos || [];
   c.tests = c.tests || {};
   c.history = c.history || [];
+  c.groups = c.groups || [];        // 项目分组的名字（按显示顺序）
+  c.repoGroup = c.repoGroup || {};  // 项目路径 → 分组名
   // 旧版本在验证结果里显示过密码的前后几位，清掉
   for (const a of c.accounts) if (a.verify && /有凭据（/.test(a.verify.msg || '')) delete a.verify;
   return c;
@@ -1084,7 +1086,15 @@ async function accountView(a) {
 
 async function allRepos(c) {
   const infos = await Promise.all(c.repos.map(repoInfo));
-  return infos.map(i => Object.assign(annotate(i, c.accounts), { test: c.tests[i.path] || null }));
+  return infos.map(i => Object.assign(annotate(i, c.accounts), { test: c.tests[i.path] || null,
+    group: c.groups.includes(c.repoGroup[i.path]) ? c.repoGroup[i.path] : '' }));
+}
+
+// 项目分组：纯展示，只记在本工具的配置里，不碰项目
+function cleanGroup(name) {
+  name = String(name || '').trim().replace(/\s+/g, ' ');
+  if (name.length > 30) throw new Error('分组名最多 30 个字');
+  return name;
 }
 
 // Sourcetree 装在哪（没装返回空）
@@ -1183,7 +1193,7 @@ async function state() {
     ...info.entries.map(e => urlHost(e.url)).filter(h => h && !h.includes('*') && !h.startsWith('gist.'))]);
   const helpers = { base: info.base, store: info.store.map(x => x.cmd), hosts: {} };
   for (const h of hosts) helpers.hosts[h] = hostHelper(info, h);
-  return { accounts, repos, history: c.history.slice(-100).reverse(), sys, localKeys, lastSync: c.lastSync || 0,
+  return { accounts, repos, groups: c.groups, history: c.history.slice(-100).reverse(), sys, localKeys, lastSync: c.lastSync || 0,
     cloneDir: c.cloneDir && fs.existsSync(c.cloneDir) ? c.cloneDir : '', helpers, gh: ghCache };
 }
 
@@ -1376,7 +1386,58 @@ const api = {
   },
 
   async removeRepo({ path: p }) {
-    await withConf(c => { c.repos = c.repos.filter(x => x !== p); delete c.tests[p]; });
+    await withConf(c => { c.repos = c.repos.filter(x => x !== p); delete c.tests[p]; delete c.repoGroup[p]; });
+    return state();
+  },
+
+  async addGroup({ name }) {
+    name = cleanGroup(name);
+    if (!name) throw new Error('请填写分组名');
+    await withConf(c => { if (!c.groups.includes(name)) c.groups.push(name); });
+    return state();
+  },
+
+  // 把项目放进分组（没有这个分组就新建）；group 为空 = 移出分组
+  async setRepoGroup({ paths, group }) {
+    group = cleanGroup(group);
+    await withConf(c => {
+      if (group && !c.groups.includes(group)) c.groups.push(group);
+      for (const p of paths || []) {
+        if (!c.repos.includes(p)) continue;
+        if (group) c.repoGroup[p] = group; else delete c.repoGroup[p];
+      }
+    });
+    return state();
+  },
+
+  // 改成已有的分组名 = 合并到那个分组
+  async renameGroup({ from, to }) {
+    to = cleanGroup(to);
+    if (!to) throw new Error('请填写分组名');
+    await withConf(c => {
+      const i = c.groups.indexOf(from);
+      if (i < 0) throw new Error('分组不存在');
+      if (to !== from && c.groups.includes(to)) c.groups.splice(i, 1); else c.groups[i] = to;
+      for (const p of Object.keys(c.repoGroup)) if (c.repoGroup[p] === from) c.repoGroup[p] = to;
+    });
+    return state();
+  },
+
+  // 删除分组：里面的项目变成“未分组”，项目本身不动
+  async deleteGroup({ name }) {
+    await withConf(c => {
+      c.groups = c.groups.filter(g => g !== name);
+      for (const p of Object.keys(c.repoGroup)) if (c.repoGroup[p] === name) delete c.repoGroup[p];
+    });
+    return state();
+  },
+
+  async moveGroup({ name, delta }) {
+    await withConf(c => {
+      const i = c.groups.indexOf(name), j = i + (delta < 0 ? -1 : 1);
+      if (i < 0 || j < 0 || j >= c.groups.length) return;
+      [c.groups[i], c.groups[j]] = [c.groups[j], c.groups[i]];
+    });
     return state();
   },
 

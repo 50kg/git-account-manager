@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New / 新功能
+- **Project groups.** Sort projects into your own groups — work, personal, or anything else. The Projects page switches between *By host* and *By group*; in group view you can create groups, add several projects at once, rename, reorder and delete groups, and every project's details have a group button. Groups only organize the list: they're kept in the app's own settings and never touch the projects.
+  **项目分组**：按自己的方式给项目分组，比如公司、个人。项目页可以在“按站点”和“按分组”之间切换；按分组时可以新建分组、一次勾选多个项目放进去、重命名、调整顺序、删除分组，每个项目的详情里也有分组按钮。分组只用来整理列表，记在本工具自己的配置里，不会改动项目。
+- **Commit identity on every project row.** A second line under each project name shows who new commits will be recorded as and where that comes from, without expanding the row. Missing or invalid identities are red, and ones that don't match the bound account are orange.
+  **项目行上直接显示提交身份**：每个项目名下面多一行，不用展开就能看到新提交会记成谁、来自哪里。没设置或邮箱无效的标红，和绑定账号不一致的标橙。
+
+### Changed / 改动
+- The global commit identity now lives on the *Accounts* page, next to the accounts, instead of under *History & Settings*.
+  全局提交身份从“记录与设置”移到了“账号”页，和账号放在一起管理。
+
 ## 1.6.1 — 2026-11-01
 
 ### New / 新功能
