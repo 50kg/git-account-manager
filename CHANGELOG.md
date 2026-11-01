@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.1 — 2026-11-01
 
 ### New / 新功能
 - **Global commit identity.** *History & Settings → Global commit identity* shows the `user.name` / `user.email` in your global git config — what projects without their own identity commit with — and lets you change it, with suggestions from your accounts (including the GitHub / GitLab noreply address). The change is recorded and can be undone.
