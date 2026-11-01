@@ -55,7 +55,7 @@ It only edits each project's `.git/config`. Your code is never touched, and ever
 - Drag folders into the window (or a parent folder — repos inside are found automatically).
 - Pick an account per project from a picker that tells you whether each account **can access that repository** (push / read-only / not authorized).
 - "Apply suggestions" binds every project to the right account in one click.
-- **Commit identity**: see who new commits in each project will be recorded as (set for the project or taken from the global config) and change it per project. When it doesn't match the bound account, you're told and can fix it in one click.
+- **Commit identity**: see who new commits in each project will be recorded as (set for the project or taken from the global config) and change it per project. When it doesn't match the bound account, you're told and can fix it in one click. The global commit identity can be changed under *History & Settings* too, and you're warned when it's incomplete or the email is invalid.
 - See at a glance: uncommitted changes, unpushed commits, new commits on the remote. **One-click pull** (fast-forward only — it refuses and explains when branches diverge or local changes would be overwritten).
 - Clickable status counters to filter: needs attention / updates available / local changes / unreachable.
 - Open in Finder / Explorer, Terminal, **Sourcetree**, or the repository web page.

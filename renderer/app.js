@@ -191,6 +191,7 @@ const accKind = a => a.auth === 'ssh' ? 'SSH' : 'Token';
 const identText = (name, email) => [name, email ? `<${email}>` : ''].filter(Boolean).join(' ');
 const accIdent = a => a ? identText(a.commitName, a.commitEmail) : '';
 const identArgs = (p, a) => Object.assign({ path: p }, a.commitName ? { name: a.commitName } : {}, a.commitEmail ? { email: a.commitEmail } : {});
+const EMAIL_OK = e => /^[^\s<>@]+@[^\s<>@]+$/.test(e);
 const bindable = r => (r.proto === 'https' || r.proto === 'ssh') && !r.viaProxy;
 const groupOf = r => r.nhost || (r.proto === 'none' ? 'none' : 'other');
 const groupName = g => g === 'none' ? t('没有远程仓库') : g === 'other' ? t('其他') : hostName(g);
@@ -415,7 +416,7 @@ function renderRepos() {
   list.forEach(r => { (groups[groupOf(r)] = groups[groupOf(r)] || []).push(r); });
   const rank = g => { const i = Object.keys(HOST_NAMES).indexOf(g); return i >= 0 ? i : g.includes('.') ? 50 : 99; };
   const order = Object.keys(groups).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  el.innerHTML = head + helperNote(true) + ideNote() + `
+  el.innerHTML = head + helperNote(true) + ideNote() + globalIdentNote() + `
     <div class="stats">
       ${[['all', repos.length, t('全部项目'), ''], ['attention', repos.filter(needsAttention).length, t('需要处理'), 'warn'],
         ['behind', repos.filter(FILTERS.behind).length, t('远程有更新'), 'acc'], ['dirty', repos.filter(FILTERS.dirty).length, t('有本地改动'), ''],
@@ -498,7 +499,8 @@ function identHtml(r) {
   const src = nLocal === 2 ? t('这个项目单独设置的') : nLocal ? t('部分来自全局配置') : t('来自全局配置');
   const cur = identText(id.name, id.email);
   return (cur ? `<b class="selectable">${esc(cur)}</b> <span class="muted">· ${esc(src)}</span>` : '')
-    + (!id.name || !id.email ? ` <span class="bad-text">${esc(!cur ? t('没有设置：提交时 git 会报错') : !id.name ? t('缺名字：提交时 git 会报错') : t('缺邮箱：提交时 git 会报错或自己乱猜一个'))}</span>` : '')
+    + (!id.name || !id.email ? ` <span class="bad-text">${esc(!cur ? t('没有设置：提交时 git 会报错') : !id.name ? t('缺名字：提交时 git 会报错') : t('缺邮箱：提交时 git 会报错或自己乱猜一个'))}</span>`
+      : !EMAIL_OK(id.email) ? ` <span class="bad-text">${esc(t('邮箱无效：提交关联不到网站账号'))}</span>` : '')
     + ` <button class="btn sm link" data-act="editIdent" data-path="${esc(r.path)}">${esc(t('修改…'))}</button>`
     + (r.identWarn ? `<button class="btn sm primary" data-act="fixIdent" data-path="${esc(r.path)}" title="${esc(accIdent(a))}">${esc(t('改成 {name} 的', { name: loginOf(a) }))}</button>` : '');
 }
@@ -512,7 +514,7 @@ async function editIdent(p) {
       <label>${esc(t('名字'))}</label><input id="f-iname" value="${esc(id.local.name || '')}" placeholder="${esc(keep(id.base.name))}">
       <label>${esc(t('邮箱'))}</label><input id="f-iemail" value="${esc(id.local.email || '')}" placeholder="${esc(keep(id.base.email))}" spellcheck="false">
       ${accIdent(a) ? `<label></label><div class="sugg"><button class="btn sm" id="f-useacc" title="${esc(accIdent(a))}">${esc(t('填入账号 {name} 的', { name: loginOf(a) }))}</button><span class="muted">${esc(accIdent(a))}</span></div>` : ''}
-      <div class="hint">${esc(t('两项都留空 = 去掉这个项目的单独设置，用全局配置。'))}</div>
+      <div class="hint">${esc(t('两项都留空 = 去掉这个项目的单独设置，用全局配置。全局配置在“记录与设置 → 全局提交身份”里改。'))}</div>
     </div>`;
   const data = await modal(t('「{name}」的提交身份', { name: r.name }), html, [
     { text: t('取消'), value: null },
@@ -523,6 +525,60 @@ async function editIdent(p) {
   });
   if (!data) return;
   try { setState(await call('setRepoIdentity', data)); toast(t('已保存')); } catch (e) { toastErr(e); }
+}
+
+// 项目没单独设的那一项，实际拿到的（全局配置或它按目录引入的）缺了或者邮箱无效
+const usesBadGlobal = r => r.exists && ((r.ident.local.name == null && !r.ident.name)
+  || (r.ident.local.email == null && (!r.ident.email || !EMAIL_OK(r.ident.email))));
+
+function globalIdentNote() {
+  const g = S.sys.ident;
+  const n = g && g.problem ? S.repos.filter(usesBadGlobal).length : 0;
+  if (!n) return '';
+  const head = g.problem === 'email' ? t('全局提交邮箱 {email} 不是有效邮箱', { email: g.email }) : t('全局提交身份没设置全');
+  const why = g.problem === 'email' ? t('{n} 个没单独设置邮箱的项目，新提交关联不到网站账号（没有头像，也不算贡献）。', { n })
+    : t('{n} 个没单独设置的项目，提交时 git 会报错。', { n });
+  return `<div class="note warn"><b>${esc(head)}</b>${isEn() ? ': ' : '：'}${esc(why)} <button class="btn sm primary" data-act="editGlobalIdent">${esc(t('修改全局提交身份…'))}</button></div>`;
+}
+
+async function editGlobalIdent() {
+  const g = S.sys.ident;
+  // 每个人只列一次（同名的 token 和 SSH 账号算一个），设过提交身份的那个优先
+  const people = [];
+  for (const a of S.accounts.slice().sort((x, y) => !!accIdent(y) - !!accIdent(x))) {
+    if (!people.some(x => normHost(x.host) === normHost(a.host) && loginOf(x).toLowerCase() === loginOf(a).toLowerCase())) people.push(a);
+  }
+  const html = `<p>${esc(t('没单独设置提交身份的项目，新提交都记成这里的名字和邮箱。项目自己设的（包括换账号时写进去的）优先。'))}</p>
+    <div class="form">
+      <label>${esc(t('名字'))}</label><input id="f-gname" value="${esc(g.name)}">
+      <label>${esc(t('邮箱'))}</label><input id="f-gemail" value="${esc(g.email)}" spellcheck="false">
+      ${people.length ? `<label></label><div class="sugg" id="f-gacc"><span class="muted">${esc(t('从账号推荐：'))}</span>${people.map(a =>
+        `<button class="btn sm" data-acc="${a.id}">${esc(loginOf(a))} · ${esc(hostName(a.host))}</button>`).join('')}</div>
+      <label></label><div class="sugg" id="f-gsugg"></div>` : ''}
+      <div class="hint">${esc(t('写在 {file}，只影响以后的新提交。两项都留空 = 从全局配置里删掉，没单独设置的项目提交时 git 会报错。', { file: g.file }))}</div>
+    </div>`;
+  const data = await modal(t('全局提交身份'), html, [
+    { text: t('取消'), value: null },
+    { text: t('保存'), primary: true, value: b => ({ name: b.querySelector('#f-gname').value, email: b.querySelector('#f-gemail').value }) },
+  ], back => {
+    const box = back.querySelector('#f-gsugg');
+    if (!box) return;
+    wireSugg(back, box, '#f-gname', '#f-gemail');
+    back.querySelector('#f-gacc').onclick = e => {
+      const b = e.target.closest('[data-acc]');
+      if (!b) return;
+      back.querySelectorAll('#f-gacc [data-acc]').forEach(x => x.classList.toggle('on', x === b));
+      const a = accById(b.dataset.acc);
+      box.innerHTML = `<span class="muted"><span class="spin"></span> ${esc(t('正在查网站上的资料…'))}</span>`;
+      call('identityHints', { id: a.id }).catch(e => ({ name: '', emails: [], error: e.message })).then(h => {
+        const items = (accIdent(a) ? [suggBtn(a.commitName, a.commitEmail, t('账号设置的：{v}', { v: accIdent(a) }))] : []).concat(hintBtns(h));
+        box.innerHTML = items.length ? `<span class="muted">${esc(t('点一下填入：'))}</span>${items.join('')}${noreplyNote(h)}`
+          : `<span class="muted">${esc(h.error ? tr(h.error) : t('网站上没有可以推荐的名字和邮箱，自己填就行'))}</span>`;
+      });
+    };
+  });
+  if (!data) return;
+  try { setState(await call('setGlobalIdentity', data)); toast(t('已保存')); } catch (e) { toastErr(e); }
 }
 
 async function fixIdent(p) {
@@ -587,10 +643,11 @@ async function addPaths(paths) {
   } catch (e) { toastErr(e); }
 }
 
-// 提交身份的改动：old / new 为 null 表示项目里不设（base 是那时全局配置里的值，记录里没有）
-function identDiff(list, base) {
+// 提交身份的改动：old / new 为 null 表示项目里不设（base 是那时全局配置里的值，记录里没有）；global：改的是全局配置，null 就是没设置
+function identDiff(list, base, global) {
   const val = (key, v) => {
     if (v != null) return `${key} = ${v}`;
+    if (global) return t('{key}（没设置）', { key });
     const b = base && base[key.slice(5)];
     return b ? t('{key}（项目里不设，用全局的 {v}）', { key, v: b }) : t('{key}（项目里不设）', { key });
   };
@@ -1048,6 +1105,21 @@ async function manualAdd() {
 
 const EMAIL_KINDS = { noreply: '隐私邮箱，推荐', commit: '网站设置的提交邮箱', primary: '主邮箱', public: '公开邮箱', other: '账号里的邮箱' };
 
+// 推荐的名字 / 邮箱按钮，点一下填进输入框
+const suggBtn = (name, email, label, tip) => `<button class="btn sm" data-name="${esc(name || '')}" data-email="${esc(email || '')}" title="${esc(tip || '')}">${esc(label)}</button>`;
+const hintBtns = h => (h.name ? [suggBtn(h.name, '', t('名字：{v}', { v: h.name }), t('网站上的名字'))] : [])
+  .concat(h.emails.map(x => suggBtn('', x.email, x.email, t(EMAIL_KINDS[x.kind] || EMAIL_KINDS.other))));
+const noreplyNote = h => h.emails.some(x => x.kind === 'noreply')
+  ? `<div class="muted" style="flex-basis:100%;font-size:12px">${esc(t('隐私邮箱（noreply）不暴露真实邮箱，网站照样把提交算到这个账号上。'))}</div>` : '';
+function wireSugg(back, box, nameSel, emailSel) {
+  box.onclick = e => {
+    const b = e.target.closest('button[data-name]');
+    if (!b) return;
+    if (b.dataset.name) back.querySelector(nameSel).value = b.dataset.name;
+    if (b.dataset.email) back.querySelector(emailSel).value = b.dataset.email;
+  };
+}
+
 async function editAccount(id) {
   const a = accById(id);
   const before = accIdent(a);
@@ -1074,19 +1146,11 @@ async function editAccount(id) {
       commitName: b.querySelector('#f-cname').value, commitEmail: b.querySelector('#f-cemail').value }) },
   ], back => {
     const box = back.querySelector('#f-sugg');
-    const btn = (name, email, label, tip) => `<button class="btn sm" data-name="${esc(name || '')}" data-email="${esc(email || '')}" title="${esc(tip || '')}">${esc(label)}</button>`;
-    box.onclick = e => {
-      const b = e.target.closest('button');
-      if (!b) return;
-      if (b.dataset.name) back.querySelector('#f-cname').value = b.dataset.name;
-      if (b.dataset.email) back.querySelector('#f-cemail').value = b.dataset.email;
-    };
+    wireSugg(back, box, '#f-cname', '#f-cemail');
     call('identityHints', { id }).catch(e => ({ name: '', emails: [], error: e.message })).then(h => {
-      const items = twins.map(x => btn(x.commitName, x.commitEmail, t('同名 {kind} 账号的：{v}', { kind: accKind(x), v: accIdent(x) }), t('{name} 的另一个账号已经设置的', { name: loginOf(x) })))
-        .concat(h.name ? [btn(h.name, '', t('名字：{v}', { v: h.name }), t('网站上的名字'))] : [])
-        .concat(h.emails.map(x => btn('', x.email, x.email, t(EMAIL_KINDS[x.kind] || EMAIL_KINDS.other))));
-      box.innerHTML = items.length ? `<span class="muted">${esc(t('点一下填入：'))}</span>${items.join('')}`
-        + (h.emails.some(x => x.kind === 'noreply') ? `<div class="muted" style="flex-basis:100%;font-size:12px">${esc(t('隐私邮箱（noreply）不暴露真实邮箱，网站照样把提交算到这个账号上。'))}</div>` : '')
+      const items = twins.map(x => suggBtn(x.commitName, x.commitEmail, t('同名 {kind} 账号的：{v}', { kind: accKind(x), v: accIdent(x) }), t('{name} 的另一个账号已经设置的', { name: loginOf(x) })))
+        .concat(hintBtns(h));
+      box.innerHTML = items.length ? `<span class="muted">${esc(t('点一下填入：'))}</span>${items.join('')}${noreplyNote(h)}`
         : `<span class="muted">${esc(h.error ? tr(h.error) : t('网站上没有可以推荐的名字和邮箱，自己填就行'))}</span>`;
     });
   });
@@ -1334,26 +1398,28 @@ function helperHistoryRow(h, i) {
 }
 
 // 项目单独改的提交身份
-function identSummary(list) {
+function identSummary(list, global) {
   const get = k => (list.find(x => x.key === 'user.' + k) || {}).new;
-  const cleared = list.filter(x => x.new == null).map(x => x.key);
-  return [identText(get('name'), get('email')), cleared.length ? t('改用全局的 {keys}', { keys: cleared.join(sep()) }) : ''].filter(Boolean).join(sep());
+  const cleared = list.filter(x => x.new == null).map(x => x.key).join(sep());
+  return [identText(get('name'), get('email')), cleared ? (global ? t('删掉 {keys}', { keys: cleared }) : t('改用全局的 {keys}', { keys: cleared })) : ''].filter(Boolean).join(sep());
 }
 
+// 项目单独改的（kind ident）或全局配置里的（kind gident，path 是全局配置文件）
 function identHistoryRow(h, i) {
   const isUndo = h.account === '撤销';  // 主进程记录里的标记，不是界面文字
+  const global = h.kind === 'gident';
   const head = `<span class="xic ${isUndo ? 'undo' : 'bind'}" title="${esc(isUndo ? t('撤销') : t('改提交身份'))}">${isUndo ? '↺' : '✎'}</span>
-    <span class="xmain"><b>${esc(h.path.split(/[\\/]/).pop())}</b><span class="xarrow">→</span><span>${esc(isUndo ? t('撤销上一次改动') : t('提交身份 {v}', { v: identSummary(h.ident) }))}</span></span>
+    <span class="xmain"><b>${esc(global ? t('全局配置') : h.path.split(/[\\/]/).pop())}</b><span class="xarrow">→</span><span>${esc(isUndo ? t('撤销上一次改动') : t('提交身份 {v}', { v: identSummary(h.ident, global) }))}</span></span>
     <span class="xmeta">${clock(h.time)}</span>`;
   const body = `
     <div class="kvgrid">
-      <span>${esc(t('项目'))}</span><b class="selectable">${esc(h.path)}</b>
+      <span>${esc(global ? t('文件') : t('项目'))}</span><b class="selectable">${esc(h.path)}</b>
       <span>${esc(t('时间'))}</span><b>${fmtTime(h.time)}</b>
     </div>
-    <div class="diff">${identDiff(h.ident)}</div>
+    <div class="diff">${identDiff(h.ident, null, global)}</div>
     <div class="acts" style="margin-top:10px">
       <button class="btn sm" data-act="undo" data-i="${i}">${esc(t('撤销这次改动'))}</button>
-      <button class="btn sm" data-act="openPath" data-path="${esc(h.path)}">${esc(t('打开文件夹'))}</button>
+      ${global ? '' : `<button class="btn sm" data-act="openPath" data-path="${esc(h.path)}">${esc(t('打开文件夹'))}</button>`}
     </div>`;
   return rowHtml('h' + h.time + ':' + h.path, head, body);
 }
@@ -1365,7 +1431,7 @@ function historyRows() {
     const day = dayLabel(h.time);
     if (day !== lastDay) { out += `<div class="xday">${esc(day)}</div>`; lastDay = day; }
     if (h.kind === 'helper') { out += helperHistoryRow(h, i); return; }
-    if (h.kind === 'ident') { out += identHistoryRow(h, i); return; }
+    if (h.kind === 'ident' || h.kind === 'gident') { out += identHistoryRow(h, i); return; }
     const name = h.path.split(/[\\/]/).pop();
     // 主进程记录里的 '撤销' / '不指定' 是数据，不是界面文字
     const isUndo = h.account === '撤销', isClone = h.kind === 'clone';
@@ -1392,6 +1458,24 @@ function historyRows() {
   return out;
 }
 
+// 全局配置里的提交身份：没单独设置的项目都用它
+function globalIdentRow() {
+  const g = S.sys.ident || {};
+  const n = S.repos.filter(r => r.exists && (r.ident.local.name == null || r.ident.local.email == null)).length;
+  const none = `<span class="muted">${esc(t('（没设置）'))}</span>`;
+  // 有项目真的受影响才标红（身份可能是按目录引入的，全局配置本身没写）
+  const bad = g.problem && S.repos.some(usesBadGlobal) ? 'bad' : '';
+  return rowHtml('gident',
+    `<span class="xic set">✎</span><span class="xmain"><b>${esc(t('全局提交身份'))}</b><span class="muted">${esc(identText(g.name, g.email) || t('（没设置）'))}</span></span>${g.problem ? chip(bad, g.problem === 'email' ? t('邮箱无效') : t('没设置全')) : ''}`,
+    `<div class="kvgrid">
+       <span>${esc(t('名字'))}</span><b class="selectable">${g.name ? esc(g.name) : none}</b>
+       <span>${esc(t('邮箱'))}</span><b class="selectable">${g.email ? esc(g.email) : none}${g.problem === 'email' ? ' ' + chip('bad', t('不是有效邮箱')) : ''}</b>
+       <span>${esc(t('文件'))}</span><b class="selectable">${esc(g.file || '')}</b>
+     </div>
+     <p class="muted" style="margin:0 0 10px">${esc(t('没单独设置提交身份的项目，新提交都记成这个名字和邮箱（列表里有 {n} 个项目至少有一项用的是它）。网站按邮箱把提交算到账号上。', { n }))}</p>
+     <div class="acts"><button class="btn" data-act="editGlobalIdent">${esc(t('修改…'))}</button></div>`);
+}
+
 function renderRecords() {
   const s = S.sys;
   const store = storeName();
@@ -1405,6 +1489,7 @@ function renderRecords() {
       `<div class="seg" id="lang-seg">${[['zh', '中文'], ['en', 'English']].map(([k, label]) => `<button class="${window.I18N.getLang() === k ? 'on' : ''}" data-act="lang" data-l="${k}">${label}</button>`).join('')}</div>
        <p class="muted" style="margin:8px 0 0">${esc(t('默认跟随系统语言。也可以在左下角切换。'))}</p>`),
     versionRow(),
+    globalIdentRow(),
     rowHtml('sync',
       `<span class="xic set">⇅</span><span class="xmain"><b>${esc(t('Mac / Windows 同步账号'))}</b><span class="muted">${esc(t('导出 / 导入账号配置，不含 token'))}</span></span>`,
       `<p class="muted" style="margin-top:0">${t('导出的文件只有账号信息（网站、用户名、备注、密钥文件名），<b>不含 token 和密钥</b>。在另一台电脑导入后，到账号页把 token 粘贴一次即可；SSH 密钥需要自己拷过去，或在那台电脑上重新生成。')}</p>
@@ -1522,7 +1607,7 @@ async function undo(i) {
   const ok = h.kind === 'helper'
     ? await modal(t('撤销修改'), `<p>${t('把下面这几行加回 <b>{file}</b>，{site} 的 git 认证会重新由 {tool}接管：', { file: esc(h.file), site: esc(hostName(h.host)), tool: esc(toolName(h.tool)) })}</p>
         <div class="diff">${h.lines.map(l => l.values.map(v => `<div class="new">+ ${esc(l.key)} = ${esc(v)}</div>`).join('')).join('')}</div>`)
-    : h.kind === 'ident' ? await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的提交身份改回：', { path: esc(h.path) })}</p><div class="diff">${identDiff(revertIdent(h.ident))}</div>`)
+    : h.kind === 'ident' || h.kind === 'gident' ? await modal(t('撤销修改'), `<p>${h.kind === 'gident' ? esc(t('把全局提交身份改回：')) : t('把 <b>{path}</b> 的提交身份改回：', { path: esc(h.path) })}</p><div class="diff">${identDiff(revertIdent(h.ident), null, h.kind === 'gident')}</div>`)
     : await modal(t('撤销修改'), `<p>${t('把 <b>{path}</b> 的远程地址改回：', { path: esc(h.path) })}</p><div class="diff">${esc(h.oldUrl)}${identDiff(revertIdent(h.ident))}</div>`);
   if (!ok) return;
   try { setState(await call('undo', { index: i })); toast(t('已撤销')); } catch (e) { toastErr(e); }
@@ -1570,6 +1655,7 @@ const ACTIONS = {
   pubkey: d => showPublicKey(d.id),
   editAcc: d => editAccount(d.id),
   editIdent: d => editIdent(d.path),
+  editGlobalIdent: () => editGlobalIdent(),
   fixIdent: d => fixIdent(d.path),
   delAcc: d => deleteAccount(d.id),
   undo: d => undo(+d.i),

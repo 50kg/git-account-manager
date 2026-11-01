@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New / 新功能
+- **Global commit identity.** *History & Settings → Global commit identity* shows the `user.name` / `user.email` in your global git config — what projects without their own identity commit with — and lets you change it, with suggestions from your accounts (including the GitHub / GitLab noreply address). The change is recorded and can be undone.
+  **全局提交身份**：“记录与设置 → 全局提交身份”显示全局 git 配置里的 `user.name` / `user.email`（没单独设置的项目都用它），可以直接修改，并从账号推荐名字和邮箱（包括 GitHub / GitLab 的隐私邮箱）。改动会记下来，可以撤销。
+- When the global identity is incomplete or its email isn't a valid address (for example just `qk`), the Projects page says how many projects are affected — their commits fail, or aren't linked to any account on the website — with a button to fix it. A project's identity line also flags an invalid email.
+  全局提交身份没设置全、或者邮箱不是有效邮箱（比如只写了 `qk`）时，项目页会说明影响了几个项目：提交会报错，或者关联不到网站账号，并给出修改按钮。项目的提交身份那一行也会标出无效邮箱。
+
 ## 1.6.0 — 2026-11-01
 
 ### New / 新功能

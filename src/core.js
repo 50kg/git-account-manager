@@ -577,11 +577,13 @@ function planBind(info, acc) {
 
 const IDENT_FIELDS = [['name', 'commitName'], ['email', 'commitEmail']];
 
+const EMAIL_RE = /^[^\s<>@]+@[^\s<>@]+$/;
+
 function cleanIdent(name, email) {
   name = String(name || '').trim();
   email = String(email || '').trim();
   if (/[<>\r\n]/.test(name)) throw new Error('名字里不能有 < > 或换行');
-  if (email && !/^[^\s<>@]+@[^\s<>@]+$/.test(email)) throw new Error('邮箱格式不对：' + email);
+  if (email && !EMAIL_RE.test(email)) throw new Error('邮箱格式不对：' + email);
   return { name, email };
 }
 
@@ -601,11 +603,31 @@ function planIdent(info, acc, accounts) {
   return out;
 }
 
+// p 为空时改全局配置（~/.gitconfig）
 async function applyIdent(p, changes) {
+  const where = p ? '--local' : '--global';
   for (const x of changes || []) {
-    const r = await git(x.new == null ? ['config', '--local', '--unset-all', x.key] : ['config', '--local', '--replace-all', x.key, x.new], { cwd: p, timeout: 10000 });
+    const r = await git(x.new == null ? ['config', where, '--unset-all', x.key] : ['config', where, '--replace-all', x.key, x.new], { cwd: p || HOME, timeout: 10000 });
     if (r.code !== 0 && !(x.new == null && r.code === 5)) throw new Error('修改提交身份失败：' + scrub(r.stderr));  // 5 = 本来就没有这一项
   }
+}
+
+// 全局配置里的提交身份：没单独设置的项目，新提交都用它。problem：missing（缺名字或邮箱）/ email（邮箱不是有效邮箱）。
+// 只看全局配置文件本身（includeIf 按目录引入的身份不算），项目实际用的是什么看 repoInfo 的 ident
+async function globalIdent() {
+  const r = await git(['config', '--global', '--show-origin', '-z', '--get-regexp', '^user\\.(name|email)$'], { timeout: 10000 });
+  // 还没有值时 git config --global 会写到哪：~/.gitconfig；它不存在而 XDG 的 git/config 存在时写到后者
+  const home = path.join(HOME, '.gitconfig'), xdg = path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'git', 'config');
+  const id = { name: '', email: '', file: process.env.GIT_CONFIG_GLOBAL || (!fs.existsSync(home) && fs.existsSync(xdg) ? xdg : home) };
+  const parts = r.stdout.split('\0');
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const kv = parts[i + 1], nl = kv.indexOf('\n');
+    const f = (nl < 0 ? kv : kv.slice(0, nl)).replace(/^user\./i, '').toLowerCase();
+    id[f] = nl < 0 ? '' : kv.slice(nl + 1);
+    id.file = parts[i].replace(/^file:/, '');
+  }
+  id.problem = !id.name || !id.email ? 'missing' : EMAIL_RE.test(id.email) ? '' : 'email';
+  return id;
 }
 
 const revertIdent = list => (list || []).map(x => ({ key: x.key, old: x.new, new: x.old }));
@@ -1130,9 +1152,10 @@ function jetbrainsIdes() {
 }
 
 async function sysInfo() {
-  const [ver, helper] = await Promise.all([
+  const [ver, helper, ident] = await Promise.all([
     git(['--version'], { timeout: 10000 }),
     git(['config', '--get-all', 'credential.helper'], { timeout: 10000 }),
+    globalIdent(),
   ]);
   return {
     platform: IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : process.platform,
@@ -1145,6 +1168,7 @@ async function sysInfo() {
     sourcetree: findSourcetree(),
     ides: jetbrainsIdes(),
     confPath,
+    ident,
   };
 }
 
@@ -1417,9 +1441,9 @@ const api = {
         c.history.push(Object.assign({}, h, { time: Date.now(), account: '撤销', moved: [] }));
         return;
       }
-      if (h.kind === 'ident') {
-        await applyIdent(h.path, revertIdent(h.ident));
-        c.history.push({ time: Date.now(), kind: 'ident', path: h.path, ident: revertIdent(h.ident), account: '撤销' });
+      if (h.kind === 'ident' || h.kind === 'gident') {
+        await applyIdent(h.kind === 'ident' ? h.path : null, revertIdent(h.ident));
+        c.history.push(Object.assign({}, h, { time: Date.now(), ident: revertIdent(h.ident), account: '撤销' }));
         return;
       }
       if (h.oldUrl.includes('***')) throw new Error('旧地址里含有密码，出于安全没有保存，无法撤销');
@@ -1595,6 +1619,21 @@ const api = {
     await applyIdent(p, ident);
     await withConf(c => {
       c.history.push({ time: Date.now(), kind: 'ident', path: p, ident, account: '' });
+      c.history = c.history.slice(-300);
+    });
+    return state();
+  },
+
+  // 改全局配置里的提交身份。规则同上；只检查改了的那一项（原来的邮箱不合格，只改名字时不拦）
+  async setGlobalIdentity({ name, email }) {
+    const cur = await globalIdent();
+    const want = { name: name == null ? cur.name : String(name).trim(), email: email == null ? cur.email : String(email).trim() };
+    cleanIdent(want.name !== cur.name ? want.name : '', want.email !== cur.email ? want.email : '');
+    const ident = IDENT_FIELDS.map(([f]) => ({ key: 'user.' + f, old: cur[f] || null, new: want[f] || null })).filter(x => x.old !== x.new);
+    if (!ident.length) return state();
+    await applyIdent(null, ident);
+    await withConf(c => {
+      c.history.push({ time: Date.now(), kind: 'gident', path: cur.file, file: cur.file, ident, account: '' });
       c.history = c.history.slice(-300);
     });
     return state();

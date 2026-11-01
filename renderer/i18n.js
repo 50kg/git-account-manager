@@ -200,7 +200,24 @@
     '留空 = 用全局的 {v}': 'Empty = use the global {v}',
     '留空 = 不设': 'Empty = not set',
     '填入账号 {name} 的': 'Fill in {name}\'s',
-    '两项都留空 = 去掉这个项目的单独设置，用全局配置。': 'Leave both empty to remove the project setting and use the global config.',
+    '两项都留空 = 去掉这个项目的单独设置，用全局配置。全局配置在“记录与设置 → 全局提交身份”里改。': 'Leave both empty to remove the project setting and use the global config, which you can change under History & Settings → Global commit identity.',
+    '邮箱无效：提交关联不到网站账号': 'Invalid email: commits won\'t be linked to an account on the website',
+    // 全局提交身份
+    '全局提交身份': 'Global commit identity',
+    '全局配置': 'Global config',
+    '全局提交邮箱 {email} 不是有效邮箱': 'The global commit email {email} isn\'t a valid email address',
+    '全局提交身份没设置全': 'The global commit identity is incomplete',
+    '{n} 个没单独设置邮箱的项目，新提交关联不到网站账号（没有头像，也不算贡献）。': '{n} project without its own email will make commits that aren\'t linked to any account on the website (no avatar, no contributions).|{n} projects without their own email will make commits that aren\'t linked to any account on the website (no avatar, no contributions).',
+    '{n} 个没单独设置的项目，提交时 git 会报错。': 'Git will refuse to commit in {n} project without its own setting.|Git will refuse to commit in {n} projects without their own setting.',
+    '修改全局提交身份…': 'Change global commit identity…',
+    '没单独设置提交身份的项目，新提交都记成这里的名字和邮箱。项目自己设的（包括换账号时写进去的）优先。': 'Projects without their own commit identity record new commits with this name and email. A project\'s own setting (including one written when switching accounts) takes precedence.',
+    '从账号推荐：': 'Suggest from account:',
+    '账号设置的：{v}': 'Set on the account: {v}',
+    '写在 {file}，只影响以后的新提交。两项都留空 = 从全局配置里删掉，没单独设置的项目提交时 git 会报错。': 'Stored in {file}; only new commits are affected. Leave both empty to remove them from the global config — git will then refuse to commit in projects without their own setting.',
+    '邮箱无效': 'Invalid email',
+    '没设置全': 'Incomplete',
+    '不是有效邮箱': 'not a valid email',
+    '没单独设置提交身份的项目，新提交都记成这个名字和邮箱（列表里有 {n} 个项目至少有一项用的是它）。网站按邮箱把提交算到账号上。': 'Projects without their own commit identity record new commits with this name and email ({n} project in the list uses at least part of it). Websites link commits to accounts by email.|Projects without their own commit identity record new commits with this name and email ({n} projects in the list use at least part of it). Websites link commits to accounts by email.',
     '「{name}」的提交身份已改成 {v}': 'Commit identity of "{name}" is now {v}',
 
     // ---------------------------------------------------------------- 账号页
@@ -578,6 +595,9 @@
     '改提交身份': 'Commit identity change',
     '改用全局的 {keys}': 'global {keys}',
     '把 <b>{path}</b> 的提交身份改回：': 'Change the commit identity of <b>{path}</b> back to:',
+    '把全局提交身份改回：': 'Change the global commit identity back to:',
+    '{key}（没设置）': '{key} (not set)',
+    '删掉 {keys}': 'removed {keys}',
 
     // ---------------------------------------------------------------- 主进程 / 核心逻辑的提示（tr 翻译）
     '可以拉取': 'Reachable',
