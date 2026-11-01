@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.0 — 2026-11-01
 
 ### New / 新功能
 - **Commit identity (name and email on commits).** Which account pushes is decided by the token or key, but the name and avatar on a commit come from `user.name` / `user.email` at commit time. An account can now carry a commit name and email. Switching a project to that account writes them into the project's `.git/config` too, shown in the confirmation and undoable from the history. Switching to an account without one (or to no account) only removes what the previous account wrote; anything you set for the project yourself is kept. Only new commits are affected.
